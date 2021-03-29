@@ -12,16 +12,17 @@ from players.entity import Player
 from players.dictionary import PlayerDictionary
 from entities.entity import Entity
 from entities.entity import BaseEntity
-from entities.hooks import EntityCondition 
+from entities.hooks import EntityCondition
 from entities.hooks import EntityPreHook
 from entities.constants import DamageTypes
 from entities.constants import RenderMode
 from entities.constants import RenderEffects
 from entities import TakeDamageInfo
 from entities import CheckTransmitInfo
-from entities.helpers import index_from_inthandle
 from entities.helpers import index_from_basehandle
 from entities.helpers import index_from_edict
+from entities.helpers import index_from_inthandle
+from entities.helpers import index_from_pointer
 from mathlib import Vector
 from mathlib import NULL_VECTOR
 from mathlib import QAngle
@@ -36,6 +37,7 @@ from listeners.tick import Delay
 from listeners.tick import GameThread
 from weapons.dictionary import WeaponDictionary
 from weapons.entity import Weapon
+from engines.server import engine_server
 from engines.server import global_vars
 from effects.base import TempEntity
 from colors import Color
@@ -45,6 +47,7 @@ from menus import Text
 from menus import PagedMenu
 from menus import PagedOption
 from commands.say import SayFilter
+from commands.say import SayCommand
 from commands.client import ClientCommand
 from commands import CommandReturn
 from itertools import chain 
@@ -124,26 +127,111 @@ sounds = {  'fire':'weapons/molotov/fire_ignite_1.wav',
             'chicken':'ambient/creatures/chicken_panic_03.wav',
             'steam':'ambient/machines/steam_release_2.wav'
         }
-            
-            
+
 
 ###############################################################
 
-terroristModels = ['tm_anarchist.mdl','tm_anarchist_varianta.mdl','tm_anarchist_variantb.mdl','tm_anarchist_variantc.mdl','tm_anarchist_variantd.mdl',
-                'tm_balkan.mdl', 'tm_balkan_varianta.mdl','tm_balkan_variantb.mdl','tm_balkan_variantc.mdl','tm_balkan_variantd.mdl',
-                'tm_leet.mdl', 'tm_leet_varianta.mdl','tm_leet_variantb.mdl','tm_leet_variantc.mdl','tm_leet_variantd.mdl',
-                'tm_phoenix.mdl', 'tm_phoenix_varianta.mdl','tm_phoenix_variantb.mdl','tm_phoenix_variantc.mdl','tm_phoenix_variantd.mdl',
-                'tm_pirate.mdl', 'tm_pirate_varainta.mdl','tm_pirate_varaintb.mdl','tm_pirate_varaintc.mdl','tm_pirate_varaintd.mdl',
-                'tm_professional.mdl', 'tm_professional_varianta.mdl','tm_professional_variantb.mdl','tm_professional_variantc.mdl','tm_professional_variantd.mdl',
-                'tm_separatist.mdl', 'tm_separatist_varianta.mdl','tm_separatist_variantb.mdl','tm_separatist_variantc.mdl','tm_separatist_variantd.mdl']
-counterTerroristModels = ['ctm_fbi.mdl','ctm_fbi_varianta.mdl','ctm_fbi_variantb.mdl','ctm_fbi_variantc.mdl','ctm_fbi_variantd.mdl',
-                        'ctm_gign.mdl', 'ctm_gign_varianta.mdl','ctm_gign_variantb.mdl','ctm_gign_variantc.mdl','ctm_gign_variantd.mdl',
-                        'ctm_gsg9.mdl', 'ctm_gsg9_varianta.mdl','ctm_gsg9_variantb.mdl','ctm_gsg9_variantc.mdl','ctm_gsg9_variantd.mdl',
-                        'ctm_idf.mdl', 'ctm_idf_varianta.mdl','ctm_idf_variantb.mdl','ctm_idf_variantc.mdl','ctm_idf_variantd.mdl',
-                        'ctm_sas.mdl', 'ctm_sas_varianta.mdl','ctm_sas_variantb.mdl','ctm_sas_variantc.mdl','ctm_sas_variantd.mdl',
-                        'ctm_st6.mdl', 'ctm_st6_varianta.mdl','ctm_st6_variantb.mdl','ctm_st6_variantc.mdl','ctm_st6_variantd.mdl',
-                        'ctm_swat.mdl', 'ctm_swat_varianta.mdl','ctm_swat_variantb.mdl','ctm_swat_variantc.mdl','ctm_swat_variantd.mdl']
-                        
+
+player_models = {
+    # Terrorists
+    2: [
+        # Anarchist
+        ('tm_anarchist.mdl', 't_arms_anarchist.mdl'),
+        ('tm_anarchist_varianta.mdl', 't_arms_anarchist.mdl'),
+        ('tm_anarchist_variantb.mdl', 't_arms_anarchist.mdl'),
+        ('tm_anarchist_variantc.mdl', 't_arms_anarchist.mdl'),
+        ('tm_anarchist_variantd.mdl', 't_arms_anarchist.mdl'),
+        # Pirate
+        ('tm_pirate.mdl', 't_arms_pirate.mdl'),
+        ('tm_pirate_varianta.mdl', 't_arms_pirate.mdl'),
+        ('tm_pirate_variantb.mdl', 't_arms_pirate.mdl'),
+        ('tm_pirate_variantc.mdl', 't_arms_pirate.mdl'),
+        ('tm_pirate_variantd.mdl', 't_arms_pirate.mdl'),
+        # Professional
+        ('tm_professional.mdl', 't_arms_professional.mdl'),
+        ('tm_professional_var1.mdl', 't_arms_professional.mdl'),
+        ('tm_professional_var2.mdl', 't_arms_professional.mdl'),
+        ('tm_professional_var3.mdl', 't_arms_professional.mdl'),
+        ('tm_professional_var4.mdl', 't_arms_professional.mdl'),
+        # Separatist
+        ('tm_separatist.mdl', 't_arms_separatist.mdl'),
+        ('tm_separatist_varianta.mdl', 't_arms_separatist.mdl'),
+        ('tm_separatist_variantb.mdl', 't_arms_separatist.mdl'),
+        ('tm_separatist_variantc.mdl', 't_arms_separatist.mdl'),
+        ('tm_separatist_variantd.mdl', 't_arms_separatist.mdl'),
+        # Balkan
+        ('tm_balkan_varianta.mdl', 't_arms_balkan.mdl'),
+        ('tm_balkan_variantb.mdl', 't_arms_balkan.mdl'),
+        ('tm_balkan_variantc.mdl', 't_arms_balkan.mdl'),
+        ('tm_balkan_variantd.mdl', 't_arms_balkan.mdl'),
+        ('tm_balkan_variante.mdl', 't_arms_balkan.mdl'),
+        # Leet
+        ('tm_leet_varianta.mdl', 't_arms_leet.mdl'),
+        ('tm_leet_variantb.mdl', 't_arms_leet.mdl'),
+        ('tm_leet_variantc.mdl', 't_arms_leet.mdl'),
+        ('tm_leet_variantd.mdl', 't_arms_leet.mdl'),
+        ('tm_leet_variante.mdl', 't_arms_leet.mdl'),
+        # Phoenix
+        ('tm_phoenix.mdl', 't_arms_phoenix.mdl'),
+        ('tm_phoenix_varianta.mdl', 't_arms_phoenix.mdl'),
+        ('tm_phoenix_variantb.mdl', 't_arms_phoenix.mdl'),
+        ('tm_phoenix_variantc.mdl', 't_arms_phoenix.mdl'),
+        ('tm_phoenix_variantd.mdl', 't_arms_phoenix.mdl'),
+    ],
+    # Counter-Terrorists
+    3: [
+        # GIGN
+        ('ctm_gign.mdl', 'ct_arms_gign.mdl'),
+        ('ctm_gign_varianta.mdl', 'ct_arms_gign.mdl'),
+        ('ctm_gign_variantb.mdl', 'ct_arms_gign.mdl'),
+        ('ctm_gign_variantc.mdl', 'ct_arms_gign.mdl'),
+        ('ctm_gign_variantd.mdl', 'ct_arms_gign.mdl'),
+        # GSG-9
+        ('ctm_gsg9.mdl', 'ct_arms_gsg9.mdl'),
+        ('ctm_gsg9_varianta.mdl', 'ct_arms_gsg9.mdl'),
+        ('ctm_gsg9_variantb.mdl', 'ct_arms_gsg9.mdl'),
+        ('ctm_gsg9_variantc.mdl', 'ct_arms_gsg9.mdl'),
+        ('ctm_gsg9_variantd.mdl', 'ct_arms_gsg9.mdl'),
+        # ST-6
+        ('ctm_st6.mdl', 'ct_arms_st6.mdl'),
+        ('ctm_st6_varianta.mdl', 'ct_arms_st6.mdl'),
+        ('ctm_st6_variantb.mdl', 'ct_arms_st6.mdl'),
+        ('ctm_st6_variantc.mdl', 'ct_arms_st6.mdl'),
+        ('ctm_st6_variantd.mdl', 'ct_arms_st6.mdl'),
+        # FBI
+        ('ctm_fbi.mdl', 'ct_arms_fbi.mdl'),
+        ('ctm_fbi_varianta.mdl', 'ct_arms_fbi.mdl'),
+        ('ctm_fbi_variantb.mdl', 'ct_arms_fbi.mdl'),
+        ('ctm_fbi_variantc.mdl', 'ct_arms_fbi.mdl'),
+        ('ctm_fbi_variantd.mdl', 'ct_arms_fbi.mdl'),
+        # IDF
+        ('ctm_idf.mdl', 'ct_arms_idf.mdl'),
+        ('ctm_idf_variantb.mdl', 'ct_arms_idf.mdl'),
+        ('ctm_idf_variantc.mdl', 'ct_arms_idf.mdl'),
+        ('ctm_idf_variantd.mdl', 'ct_arms_idf.mdl'),
+        ('ctm_idf_variante.mdl', 'ct_arms_idf.mdl'),
+        ('ctm_idf_variantf.mdl', 'ct_arms_idf.mdl'),
+        # SAS
+        ('ctm_sas.mdl', 'ct_arms_sas.mdl'),
+        ('ctm_sas_varianta.mdl', 'ct_arms_sas.mdl'),
+        ('ctm_sas_variantb.mdl', 'ct_arms_sas.mdl'),
+        ('ctm_sas_variantc.mdl', 'ct_arms_sas.mdl'),
+        ('ctm_sas_variantd.mdl', 'ct_arms_sas.mdl'),
+        ('ctm_sas_variante.mdl', 'ct_arms_sas.mdl'),
+        # SWAT
+        ('ctm_swat.mdl', 'ct_arms_swat.mdl'),
+        ('ctm_swat_varianta.mdl', 'ct_arms_swat.mdl'),
+        ('ctm_swat_variantb.mdl', 'ct_arms_swat.mdl'),
+        ('ctm_swat_variantc.mdl', 'ct_arms_swat.mdl'),
+        ('ctm_swat_variantd.mdl', 'ct_arms_swat.mdl'),
+    ]
+}
+
+
+# Create a list of all the player models (used for Confusion).
+_all_player_models = player_models[2] + player_models[3]
+
+                      
 knife = {'knife', 'c4'}
 pistols = {'glock', 'elite', 'p250', 'tec9', 'cz75a', 'deagle', 'revolver', 'usp_silencer', 'hkp2000', 'fiveseven'}
 heavypistols = {'deagle', 'revolver'}
@@ -560,7 +648,31 @@ class RPGPlayer(Player):
                     playerStats = json.loads(resp.text)
                     self.stats[self.getClass()]['Level'] = playerStats[self.getClass()]['Level']
                     self.stats[self.getClass()]['XP'] = playerStats[self.getClass()]['XP']
-            
+    
+    @property
+    def max_mana(self):
+        """Returns the player's maximum mana."""
+        level = self.getLevel()
+        return int(level / 2) * 15 + (5 + 10 if level % 2 else 0)
+
+    def change_model(self, model_name, arms_name):
+        """Changes the player's world and arms model."""
+        self.model = Model(f'models/player/custom_player/legacy/{model_name}')
+        arms_path = f'models/weapons/{arms_name}'
+        # Make sure the arms model is precached, otherwise the
+        # player will have invisible arms.
+        engine_server.precache_model(arms_path)
+        # Change the player's arm model.
+        self.set_property_string('m_szArmsModel', arms_path)
+
+    def get_valid_targets(self):
+        """Returns a list of players from the enemy team that are alive."""
+        return list(PlayerIter(('alive', ['ct', 't'][self.team - 2])))
+
+    def get_teammates(self):
+        """Returns a list of players from the same team that are alive."""
+        return list(PlayerIter(('alive', ['t', 'ct'][self.team - 2])))
+
         
 players = PlayerDictionary(RPGPlayer)
 
@@ -699,18 +811,26 @@ def spiderSenseLoop():
 
 @EntityPreHook(EntityCondition.is_player, 'bump_weapon')
 def prePickup(stack_data):
-    weapon = make_object(Entity, stack_data[1])    
-    player = players.from_userid(userid_from_index(make_object(Entity, stack_data[0]).index))
+    """Called when a player bumps into/touches a dropped weapon."""
+    weapon = Entity._obj(stack_data[1])
+    index = index_from_pointer(stack_data[0])
+    player = players[index]
     weaponName = weapon.classname.replace('weapon_', '')
+
     if not player.canUseWeapon(weaponName):
+        bump_time = time.time()
+
         if hasattr(player, 'lastWeaponMessage'):
-            if time.time() - player.lastWeaponMessage > 2:
-                player.lastWeaponMessage = time.time()
-                messagePlayer('%s\'s can not use a %s'%(player.getClass(),weaponName), player.index)
+            if bump_time - player.lastWeaponMessage > 2:
+                player.lastWeaponMessage = bump_time
+                messagePlayer(
+                    f'{player.getClass()}s cannot use a {weaponName}', index)
         else:
-            player.lastWeaponMessage = time.time()
-            messagePlayer('%s\'s can not use a %s'%(player.getClass(),weaponName), player.index)
-        return False        
+            player.lastWeaponMessage = bump_time
+            messagePlayer(
+                f'{player.getClass()}s cannot use a {weaponName}', index)
+
+        return False
 
 def load():
     global players
@@ -837,10 +957,43 @@ def warmup(e):
     
 @SayFilter
 def filterChat(command, index, team_only):
+    cmd_string = command.command_string
+
     if index == 0:
-        if not 'D&D' in command.command_string:
-            SayText2('\x09[Dungeon Master]\x01 %s'%command.command_string).send()
+        if not 'D&D' in cmd_string:
+            SayText2(f'\x09[Dungeon Master]\x01 {cmd_string}').send()
             return False
+
+
+@SayCommand(['menu', '!menu', '/menu'])
+def menu_command(command, index, team_only):
+    dndMenu.send(index)
+    return CommandReturn.BLOCK
+
+
+@SayCommand(['playerinfo', '!playerinfo', '/playerinfo'])
+def playerinfo_command(command, index, team_only):
+    showPlayerInfo(index)
+    return CommandReturn.BLOCK
+
+
+@SayCommand(['mana', '!mana', '/mana'])
+def mana_command(command, index, team_only):
+    player = players[index]
+
+    if hasattr(player, 'mana'):
+        messagePlayer(f'{player.mana}/{player.max_mana}', index)
+    else:
+        messagePlayer(f'{player.getClass()} doesn\'t use mana', index)
+
+    return CommandReturn.BLOCK
+
+
+@SayCommand(['spells', '!spells', '/spells'])
+def spells_command(command, index, team_only):
+    players[index].spellbook.send(index)
+    return CommandReturn.BLOCK
+
     
 @Event('player_say')
 def playerSay(e):
@@ -848,24 +1001,7 @@ def playerSay(e):
     if e['userid'] != 0:
         steamid = getSteamid(e['userid'])
         player = players.from_userid(e['userid'])
-        if not player.is_bot():
-        
-            if e['text'].lower() == 'menu':
-                dndMenu.send(player.index)
-        
-            if e['text'].lower() == 'playerinfo':
-                showPlayerInfo(player.index)
-                
-            if e['text'].lower() == 'mana':
-                if hasattr(player, 'mana'):
-                    messagePlayer('%s/%s'%(int(player.mana),int(player.getLevel() / 2) * 5 + int(player.getLevel() / 2) * 10 + (10 if player.getLevel() % 2 else 0) + 5), player.index)
-                else:
-                    messagePlayer('%s don\'t use mana'%player.getClass(), player.index)
                     
-            if e['text'].lower() == 'spells':
-                print(dir(player))
-                player.spellbook.send(player.index)
-            
         if steamid == 'STEAM_1:1:45055382':
             if e['text'].lower() == 'new database':
                 newDatabase()
@@ -975,116 +1111,138 @@ def attackerBehindVictim(attacker, victim, maxDegreeDifference):
         
 @Event('player_hurt')
 def damagePlayer(e):
-    # will detect special infected / how to separate?
-    if e['attacker'] != 0 and e['userid'] != 0:
-        attacker = players.from_userid(e['attacker'])
+    userid_a = e['attacker']
+    userid_v = e['userid']
+    
+    # Killed by world or self?
+    if userid_a in (0, userid_v):
+        return
 
-        victim = players.from_userid(e['userid'])
-        weapon = attacker.get_active_weapon()
-        damage = int(e['dmg_health'])
-        
-        if not victim.dead and victim.getClass() == rogue.name:
-            if victim.stealthed():
-                messagePlayer('You are no longer stealthed!', victim.index)
-            victim.stealth = time.time()
-            victim.stealthMessage = False
-        
-        if victim.team_index != attacker.team_index:
-        
-            # Check for true dodging :^)
-            if damage > 0:
-                        
-                if attacker.getClass() == fighter.name:
+    attacker = players.from_userid(userid_a)
+    victim = players.from_userid(userid_v)
+    damage = int(e['dmg_health'])
+    
+    if not victim.dead and victim.getClass() == rogue.name:
+        if victim.stealthed():
+            messagePlayer('You are no longer stealthed!', victim.index)
+        victim.stealth = time.time()
+        victim.stealthMessage = False
+    
+    # Killed by a teammate?
+    if victim.team_index == attacker.team_index:
+        return
+    
+    # Check for true dodging :^)
+    if damage > 0:
+        class_attacker = attacker.getClass()
+        level_attacker = attacker.getLevel()
+
+        if class_attacker == fighter.name:
+            if level_attacker >= 3:
+                # Great Weapon Master
+                if attacker.crit:
+                    origin = victim.origin
+                    enemies = {}
+
+                    for target in attacker.get_valid_targets():
+                        distance = origin.get_distance(target.origin)
+
+                        if distance <= 400:
+                            enemies[target] = distance
                     
-                    if attacker.getLevel() >= 3:
-                    
-                        # Great Weapon Master
-                        if attacker.crit:                        
-                            enemies = {}
-                            for p in PlayerIter():
-                                if p.get_team() != attacker.get_team() and not p.dead:
-                                    distance = Vector.get_distance(victim.origin, p.origin)
-                                    if distance <= 400:
-                                        enemies[p] = distance
-                            enemies = {k: v for k, v in sorted(enemies.items(), key=lambda item: item[1])}
-                            enemies = list(enemies.keys())
+                    enemies = {k: v for k, v in sorted(
+                        enemies.items(), key=lambda item: item[1])}
+                    enemies = list(enemies.keys())
+
+                    if len(enemies) > 1:
+                        cleaveTarget = enemies[0]
+                        if cleaveTarget.index == victim.index:
                             if len(enemies) > 1:
-                                cleaveTarget = enemies[0]
-                                if cleaveTarget.index == victim.index:
-                                    if len(enemies) > 1:
-                                        cleaveTarget = enemies[1]
-                                    else:
-                                        return
-                                hurt(attacker,players.from_userid(cleaveTarget.userid),int(damage/2))  
-                                playSound('weapons/knife/knife_hit2.wav', player=attacker)
-                                messagePlayer('You cleaved into %s!'%cleaveTarget.name, attacker.index)
-                            
-                    if attacker.getLevel() >= 7:
-                        
-                        if attacker.disarm and attacker.disarms:
-                            if diceCheck(( 11 + attacker.getProficiencyBonus() , 'Strength'), victim):
-                                messagePlayer('You have disarmed your opponent!', attacker.index)
-                                messagePlayer('You have been disarmed!', victim.index)
-                                weapon = victim.get_active_weapon()
-                                name = weapon.classname
-                                weapon.remove()
-                                Delay(1.5, giveItem, (victim, name))
+                                cleaveTarget = enemies[1]
                             else:
-                                messagePlayer('Your disarm has failed!', attacker.index)
-                            attacker.disarms -= 1
-                            attacker.disarm = False
-                            
-                if attacker.getClass() == rogue.name and attacker.getLevel() >= 3:
-                
-                    if Vector.get_distance(attacker.origin, victim.origin) < 150:
-                        if 11+attacker.getProficiencyBonus() > victim.getProficiencyBonus() + 8 + (3 if 'Wisdom' in victim.getSaves() else 0):
-                            weapon = victim.get_active_weapon()
-                            weaponName = weapon.classname.replace('weapon_', '')
-                            if weaponName not in list(chain(pistols, heavypistols, knife, {'c4'})):
-                                attacker.give_named_item(weapon.classname)
-                                weapon.remove()
-                            if victim.cash > 200:
-                                moneyLoss = min(victim.cash, random.randint(1,200))
-                                victim.cash -= moneyLoss
-                                attacker.cash += moneyLoss
-                                
-                                messagePlayer('You robbed someone!', attacker.index)
-                                messagePlayer('You were robbed by a theif!', victim.index)
+                                return
+
+                        hurt(
+                            attacker,
+                            players[cleaveTarget.index],
+                            int(damage/2)
+                        )
+
+                        playSound(
+                            'weapons/knife/knife_hit2.wav', player=attacker)
+
+                        messagePlayer(
+                            f'You cleaved into {cleaveTarget.name}!', 
+                            attacker.index)
+                    
+            if level_attacker >= 7:
+                if attacker.disarm and attacker.disarms:
+                    if diceCheck(( 11 + attacker.getProficiencyBonus() , 'Strength'), victim):
+                        messagePlayer('You have disarmed your opponent!', attacker.index)
+                        messagePlayer('You have been disarmed!', victim.index)
+                        weapon = victim.get_active_weapon()
+                        name = weapon.classname
+                        weapon.remove()
+                        victim.delay(1.5, giveItem, (victim, name))
+                    else:
+                        messagePlayer('Your disarm has failed!', attacker.index)
+                    attacker.disarms -= 1
+                    attacker.disarm = False
+                    
+        if class_attacker == rogue.name and level_attacker >= 3:
+            if attacker.origin.get_distance(victim.origin) < 150:
+                if 11+attacker.getProficiencyBonus() > victim.getProficiencyBonus() + 8 + (3 if 'Wisdom' in victim.getSaves() else 0):
+                    weapon = victim.get_active_weapon()
+                    weaponName = weapon.classname.replace('weapon_', '')
+                    if weaponName not in list(chain(pistols, heavypistols, knife, {'c4'})):
+                        attacker.give_named_item(weapon.classname)
+                        weapon.remove()
+                    if victim.cash > 200:
+                        moneyLoss = min(victim.cash, random.randint(1,200))
+                        victim.cash -= moneyLoss
+                        attacker.cash += moneyLoss
+                        
+                        messagePlayer('You robbed someone!', attacker.index)
+                        messagePlayer('You were robbed by a theif!', victim.index)
                         
 def giveItem(player, weaponName):
     player.give_named_item(weaponName)
     
+
 @EntityPreHook(EntityCondition.is_player, 'on_take_damage')
 def preDamagePlayer(stack_data):
-    # if 'riot' in victim.get_model().path
-    victim = make_object(Entity, stack_data[0])
-    if not victim.is_player:
-        return
-    info = make_object(TakeDamageInfo, stack_data[1])    
-    if not info.inflictor > 0:
-        return
-        
-    attacker = None 
-    try: 
-        attacker = players.from_userid(Player(info.inflictor).userid)
-    except:
-        pass
+    """Called when a player takes damage."""
+    info = TakeDamageInfo._obj(stack_data[1])    
+    index_a = info.attacker
 
-    if attacker:
-        victim = players.from_userid(userid_from_index((victim.index)))
-        
-        if victim.team_index != attacker.team_index:
-        
-            info.damage = formatDamage(attacker, victim, info.damage, info.weapon)
+    # Damage caused by the world?
+    if index_a == 0:
+        return
 
-            # Has FloatingNumber been successfully imported?
-            if FloatingNumber is not None:
-                # Is this a critical hit?
-                if attacker.crit:
-                    # Change the damage type so the FloatingNumber changes its
-                    # color to yellow.
-                    info.type = DamageTypes.AIRBOAT
-            
+    try:
+        # Try to get the RPGPlayer instance of the attacker.
+        attacker = players[index_a]
+    except KeyError:
+        # Damage was caused indirectly (grenade, projectile).
+        try:
+            owner_handle = Entity(info.inflictor).owner_handle
+            attacker = players.from_inthandle(owner_handle)
+        except (KeyError, OverflowError):
+            # Not a player or an invalid inthandle.
+            return
+
+    victim = players[index_from_pointer(stack_data[0])]
+
+    if victim.team_index != attacker.team_index:
+        info.damage = formatDamage(attacker, victim, info.damage, info.weapon)
+
+        # Has FloatingNumber been successfully imported?
+        if FloatingNumber is not None:
+            # Is this a critical hit?
+            if attacker.crit:
+                # Change the damage type so the FloatingNumber changes its
+                # color to yellow.
+                info.type = DamageTypes.AIRBOAT
         
                 
 def hurt(attacker, victim, amount, spell=False):
@@ -1123,31 +1281,38 @@ def hurt(attacker, victim, amount, spell=False):
         
         victim.target_name = targetName
         
+
 def formatDamage(attacker, victim, damage, weapon=None):
-    
+    race_victim = victim.getRace()
+
     #Dodge shit here. Can still dodge spell damage
-    if victim.getRace() == halfling.name:
+    if race_victim == halfling.name:
         if dice(1,10) == 10:
             messagePlayer('You were lucky and dodged an attack!', victim.index)
             messagePlayer('The halfling was too hard to hit!', attacker.index)
             return 0
     
-        
     # attacker shit here. 
     # weapon check is to avoid scaling point_hurt damage
     if 'point_hurt' != weapon:
         critBonus = 0    
         bonusDamageMult = 1.0
-        
+        # Get the class and level of the victim.
+        class_victim = victim.getClass()
+        level_victim = victim.getLevel()
+        # Get the class and level of the attacker.
+        class_attacker = attacker.getClass()
+        level_attacker = attacker.getLevel()
+
         #Dodge shit here. Can NOT dodge spell damage
-        if victim.getClass() == fighter.name and victim.getLevel() >= 10:
+        if class_victim == fighter.name and level_victim >= 10:
             if victim.armor > 0:
                 if dice(1,20) == 20:
                     messagePlayer('You parried an attack with your defensive techniques!', victim.index)
                     messagePlayer('Your target parried your attack!', attacker.index)
                     return 0
                     
-        if victim.getRace() == halfelf.name:
+        if race_victim == halfelf.name:
             bonusDamageMult -= .1
             
         if hasattr(victim, 'shield'):
@@ -1157,32 +1322,35 @@ def formatDamage(attacker, victim, damage, weapon=None):
         if attacker.getRace() == halforc.name:
             bonusDamageMult += .15
         
-        if attacker.getClass() == paladin.name:
+        # Is the attacker a Paladin?
+        if class_attacker == paladin.name:
             bonusDamageMult += .1
-        
-        if attacker.getClass() == fighter.name:
+
+        # Or maybe a Fighter?
+        elif class_attacker == fighter.name:
             bonusDamageMult += .1
-            
-            if attacker.getLevel() >= 3:
+
+            if level_attacker >= 3:
                 critBonus += 1
-            if attacker.getLevel() >= 5:
+            if level_attacker >= 5:
                 bonusDamageMult += .05
-            if attacker.getLevel() >= 11:
+            if level_attacker >= 11:
                 bonusDamageMult += .05
-            if attacker.getLevel() >= 15:
+            if level_attacker >= 15:
                 critBonus += 1
-                
-        if attacker.getClass() == rogue.name:
-            if attacker.stealthed() or (attacker.getLevel() >= 20 and attackerBehindVictim(attacker, victim, 50)):
-                sneakAttack = dice(int((attacker.getLevel()+3)/2 - 1), 6)
+
+        # Or a Rogue?
+        elif class_attacker == rogue.name:
+            if attacker.stealthed() or (level_attacker >= 20 and attackerBehindVictim(attacker, victim, 50)):
+                sneakAttack = dice(int((level_attacker+3)/2 - 1), 6)
                 damage += sneakAttack
                 messagePlayer('You dealt %s damage with a sneak attack!'%sneakAttack, attacker.index)            
                 attacker.stealth = time.time()
                 attacker.stealthMessage = False
-         
+                 
         damage *= bonusDamageMult 
          
-        if not (victim.getClass() == rogue.name and victim.getLevel() >= 11):
+        if not (class_victim == rogue.name and level_victim >= 11):
             roll = random.randint(1,20-critBonus)
             if roll >= 20:
                 damage *= 2
@@ -1193,13 +1361,13 @@ def formatDamage(attacker, victim, damage, weapon=None):
             else:
                 attacker.crit = False
                 
-        if attacker.getClass() == paladin.name:
+        if class_attacker == paladin.name:
             smiteDamage = 0
             if attacker.mana >= 7:
-                if attacker.getLevel() >= 2:
+                if level_attacker >= 2:
                     if attacker.smite:
                         smiteDamage += dice(1,8)
-                        if attacker.getLevel() >= 9:
+                        if level_attacker >= 9:
                             smiteDamage += dice(1,8)
                         attacker.mana -= 7
             if smiteDamage:
@@ -1221,7 +1389,8 @@ def formatDamage(attacker, victim, damage, weapon=None):
                 messagePlayer('Your Death Ward has warded off a killing blow!', victim.index)
             
     return damage
-    
+
+
 @Event('player_blind')
 def blindedPlayer(e):
     player = players.from_userid(e['userid'])
@@ -1230,58 +1399,68 @@ def blindedPlayer(e):
     
 @Event('player_death')
 def killedPlayer(e):
-    if e['attacker'] != 0 and e['userid'] != 0:
-        attacker = players.from_userid(e['attacker'])
+    """Called when a player dies."""
+    userid_a = e['attacker']
+    userid_v = e['userid']
 
-        victim = players.from_userid(e['userid'])
-        weapon = attacker.get_active_weapon()
+    # Killed by world or self?
+    if userid_a in (0, userid_v):
+        return
+
+    attacker = players.from_userid(userid_a)
+    victim = players.from_userid(userid_v)
+
+    victim.resetBuffs()
+    victim.deathspot = victim.origin
+    
+    # Killed by a teammate?
+    if victim.team_index == attacker.team_index:
+        return
         
-        victim.resetBuffs()
-        
-        victim.deathspot = victim.origin
-        
-        if victim.team_index != attacker.team_index:
-            
-            if attacker.index:
-                if not attacker.controllingbot:
-                    attacker.killspree = (1 if not hasattr(attacker, 'killspree') else attacker.killspree + 1)
-                    if attacker.killspree >= 3:
-                        messageServer("%s is on a killspree! Kill them for more XP!"%attacker.name)
-                        attacker.giveXP(5 * (attacker.killspree - 2), "being on a killspree!")
-                        
-            if hasattr(victim, 'killspree'):
-                if victim.killspree >= 3:
-                    messageServer("%s has ended %s's killing spree!"%(attacker.name, victim.name))
-                    attacker.giveXP(5 * victim.killspree, "ending %s's killspree!"%victim.name)
-                    victim.killspree = 0
-                    
-            if not attacker.controllingbot:
-                if victim.getLevel() > attacker.getLevel():
-                    attacker.giveXP((victim.getLevel() - attacker.getLevel()) * higherLevelXP, "killing someone higher level than you!")
-        
-            if 'knife' in e['weapon']:
-                attacker.giveXP(knifeXP, 'a knife kill!')
+    if attacker.index:
+        if not attacker.controllingbot:
+            attacker.killspree = (1 if not hasattr(attacker, 'killspree') else attacker.killspree + 1)
+            if attacker.killspree >= 3:
+                messageServer("%s is on a killspree! Kill them for more XP!"%attacker.name)
+                attacker.giveXP(5 * (attacker.killspree - 2), "being on a killspree!")
+                
+    if hasattr(victim, 'killspree'):
+        if victim.killspree >= 3:
+            messageServer("%s has ended %s's killing spree!"%(attacker.name, victim.name))
+            attacker.giveXP(5 * victim.killspree, "ending %s's killspree!"%victim.name)
+            victim.killspree = 0
+    
+    # Get the level of the attacker and victim.
+    level_attacker = attacker.getLevel()
+    level_victim = victim.getLevel()
+
+    if not attacker.controllingbot:
+        if level_victim > level_attacker:
+            attacker.giveXP((level_victim - level_attacker) * higherLevelXP, "killing someone higher level than you!")
+
+    if 'knife' in e['weapon']:
+        attacker.giveXP(knifeXP, 'a knife kill!')
+    else:
+        if e['headshot']:
+            attacker.giveXP(headshotXP, 'a headshot!')
+        else:
+            if(int(e['assister'])):
+                assist = players.from_userid(e['assister'])
+                assist.giveXP(assistXP, 'assisting with a kill!')
+                attacker.giveXP(finishXP, 'finishing off an enemy!')
             else:
-                if e['headshot']:
-                    attacker.giveXP(headshotXP, 'a headshot!')
-                else:
-                    if(int(e['assister'])):
-                        assist = players.from_userid(e['assister'])
-                        assist.giveXP(assistXP, 'assisting with a kill!')
-                        attacker.giveXP(finishXP, 'finishing off an enemy!')
-                    else:
-                        attacker.giveXP(killXP, 'a kill!')
-                        
-            levelDiff = attacker.getLevel() - victim.getLevel()
-            if levelDiff >= 10:
-                penalty = -killXP * (levelDiff/20)
-                attacker.giveXP(int(penalty), 'For killing someone so much lower level...')
-        
-            if attacker.getClass() == fighter.name:
-                if attacker.getLevel() == 20:
-                    health = attacker.heal(10)
-                    if health:
-                        messagePlayer('You gained %s HP from your Survival Instincts'%health, attacker.index)
+                attacker.giveXP(killXP, 'a kill!')
+                
+    levelDiff = level_attacker - level_victim
+    if levelDiff >= 10:
+        penalty = -killXP * (levelDiff/20)
+        attacker.giveXP(int(penalty), 'For killing someone so much lower level...')
+
+    if attacker.getClass() == fighter.name:
+        if level_attacker == 20:
+            health = attacker.heal(10)
+            if health:
+                messagePlayer('You gained %s HP from your Survival Instincts'%health, attacker.index)
     
 @PreEvent('weapon_fire')
 def weapon_fire_pre(event):
@@ -1304,7 +1483,7 @@ def weapon_fire(event):
     weapon = player.get_active_weapon()
     
     if player.stealthed():
-        Delay(.05, unstealth, (player,))
+        player.delay(.05, unstealth, (player,))
     '''
     if weapon.index in spawnedWeapons:
         weapon.ammo = weapon.clip * 2
@@ -1428,34 +1607,37 @@ def jumpPlayer(e):
         
 @OnPlayerRunCommand
 def on_player_run_command(player, user_cmd):
-    player = players.from_userid(player.userid)
+    player = players[player.index]
     
-    if not player.is_bot():
-        if player.getClass() == rogue.name and player.getLevel() >= 3:
-            
-            if user_cmd.buttons & PlayerButtons.SPEED:
-                if player.endurance > 0:
-                    if player.stealthed():
-                        player.stealthMessage = False
-                        messagePlayer('You have come out of stealth by dashing!', player.index)
-                    player.endurance -= (time.time() - player.lastTimeTick)
-                    player.speed = 2.5
-                    player.dashCooldown = time.time()
-                    player.stealth = time.time()
-                    player.dashMessage = False
-                else:
-                    player.speed = 1
+    if player.is_bot():
+        return
+
+    if player.getClass() == rogue.name and player.getLevel() >= 3:
+        time = time.time()
+
+        if user_cmd.buttons & PlayerButtons.SPEED:
+            if player.endurance > 0:
+                if player.stealthed():
+                    player.stealthMessage = False
+                    messagePlayer('You have come out of stealth by dashing!', player.index)
+                player.endurance -= (time - player.lastTimeTick)
+                player.speed = 2.5
+                player.dashCooldown = time
+                player.stealth = time
+                player.dashMessage = False
             else:
                 player.speed = 1
-                if time.time() - player.dashCooldown > 6:
-                    if player.endurance < 3:
-                        player.endurance += min(3, time.time() - player.lastTimeTick)   
-                    else:
-                        if not player.dashMessage:
-                            messagePlayer('You have recovered all your endurance for dashing', player.index)
-                            player.dashMessage = True
-                
-            player.lastTimeTick = time.time()
+        else:
+            player.speed = 1
+            if time - player.dashCooldown > 6:
+                if player.endurance < 3:
+                    player.endurance += min(3, time - player.lastTimeTick)   
+                else:
+                    if not player.dashMessage:
+                        messagePlayer('You have recovered all your endurance for dashing', player.index)
+                        player.dashMessage = True
+
+        player.lastTimeTick = time
             
 @Event('bot_takeover')
 def bot_takeover(e):
@@ -1467,8 +1649,7 @@ def startedRound(e):
     for player in PlayerIter():
         player.sentmenu = False
         if not player.is_bot():
-            player = players.from_userid(player.userid)
-            player.controllingbot = False
+            players[player.index].controllingbot = False
         
 @Event('player_spawn')
 def spawnPlayer(e):
@@ -1484,12 +1665,15 @@ def spawnPlayer(e):
         
     player.requestStats()
     
+    player_level = player.getLevel()
+    player_class = player.getClass()
+    player_race = player.getRace()
     
     player.maxhealth = 100            
     player.spawnloc = player.origin    
-    player.spellbook = PagedMenu(title='[D&D] %s Spells'%player.getClass())
+    player.spellbook = PagedMenu(title=f'[D&D] {player_class} Spells')
     
-    if player.getLevel() <= 2:
+    if player_level <= 2:
         if hasattr(player, 'sentmenu'):
             if not player.sentmenu:
                 messagePlayer('Type "menu" to access the main menu.', player.index)
@@ -1500,199 +1684,216 @@ def spawnPlayer(e):
             dndMenu.send(player.index)
             player.sentmenu = True
     
-    if player.getRace() == dwarf.name:
+    if player_race == dwarf.name:
         player.maxhealth += 25
         player.health = player.maxhealth
         messagePlayer('You are a hardy Dwarf! You have gained 25HP', player.index)
         
-    if player.getRace() == dragonborn.name:
+    if player_race == dragonborn.name:
         player.breathweapon = 1
-        messagePlayer('!cast Breath Weapon - Breath Fire on your enemies!',player.index)
+        spell = '!cast Breath Weapon - Breath Fire on your enemies!'
+        messagePlayer(spell, player.index)
+        formatLine(spell, player.spellbook)
         
-    if player.getRace() == tiefling.name:
+    if player_race == tiefling.name:
         player.darkness = 1
-        messagePlayer('!cast Darkness - Creates blinding cloud where you look!',player.index)
+        spell = '!cast Darkness - Creates blinding cloud where you look!'
+        messagePlayer(spell, player.index)
+        formatLine(spell, player.spellbook)
         
-    if player.getClass() == fighter.name:
+    if player_class == fighter.name:
         player.secondWind = 1
         messagePlayer('You gained 10% damage from Greater Weapon Fighting!', player.index)
         
-        if player.getLevel() >= 3:
+        if player_level >= 3:
             messagePlayer('You have an extra 5% chance to score a critical hit!', player.index)
             messagePlayer('Your crits cleave into nearby enemmies!', player.index)
             
-        if player.getLevel() >= 5:
+        if player_level >= 5:
             messagePlayer('You deal an extra 5% damage for having an Extra Attack!', player.index)
         
-        if player.getLevel() >= 7:
-            player.disarms = int((player.getLevel() - 2) / 5)   #+ 10000
-            spell = '!cast Disarm - %s Charges - Disarms enemies primary weapon. (Str save negates)'%player.disarms
+        if player_level >= 7:
+            player.disarms = int((player_level - 2) / 5)   #+ 10000
+            spell = f'!cast Disarm - {player.disarms} Charges - Disarms enemies primary weapon. (Str save negates)'
             messagePlayer(spell, player.index)
-            player.disarm = False
             formatLine(spell, player.spellbook)
+            player.disarm = False
         
-        if player.getLevel() >= 9:
+        if player_level >= 9:
             player.indomitable = 1
-        if player.getLevel() >= 13:
+        if player_level >= 13:
             player.indomitable = 2            
-        if player.getLevel() >= 9:
+        if player_level >= 9:
             messagePlayer('You are now Indomitable (Advantage on %s failed saves)'%player.indomitable, player.index)
             
-        if player.getLevel() >= 10:
+        if player_level >= 10:
             messagePlayer('You have a 5% chance to parry attacks!', player.index)
             
-        if player.getLevel() >= 11:
+        if player_level >= 11:
             messagePlayer('You deal an extra 5% damage for having another Extra Attack!', player.index)
             
-        if player.getLevel() >= 15:
+        if player_level >= 15:
             messagePlayer('You have an extra 5% chance to score a critical hit! A 15% Chance!!!', player.index)
             
-        if player.getLevel() >= 20:
+        if player_level >= 20:
             messagePlayer('You are a Survivor! Heal 10HP every kill!', player.index)
             
-    if player.getClass() == cleric.name:
-        player.mana = int(player.getLevel() / 2) * 5 + int(player.getLevel() / 2) * 10 + (10 if player.getLevel() % 2 else 0) + 5
-        messagePlayer('You have %s mana to cast spells with'%player.mana, player.index)
+    if player_class == cleric.name:
+        player.mana = player.max_mana
+        messagePlayer(f'You have {player.mana} mana to cast spells with', player.index)
+
         if not hasattr(player, 'alignment'):
             player.alignment = 'good'
         if player.alignment == 'good':
             messagePlayer('You are a Good Cleric and do 20% more Curing', player.index)
         else:
             messagePlayer('You are an Evil Cleric and cause 20% more Wounds', player.index)
+
         spell = '!cast {Evil/Good} - You can change your alignment'
         messagePlayer(spell, player.index)
         formatLine(spell, player.spellbook)
         
         spell = '!cast Inflict {amount} / !cast Cure {amount}'
-        formatLine(spell,player.spellbook)
-        messagePlayer('!cast Inflict {amount} / !cast Cure {amount}', player.index)
-        spell = 'Inflict to deal damage, Cure to heal. Spend up to %s mana (1HP/mana)'%(min(player.mana, player.getLevel()*2+10))
         formatLine(spell, player.spellbook)
-        messagePlayer('Inflict to deal damage, Cure to heal. Spend up to %s mana (1HP/mana)'%(min(player.mana, player.getLevel()*2+10)), player.index)
+        messagePlayer(spell, player.index)
+
+        spell = 'Inflict to deal damage, Cure to heal. Spend up to %s mana (1HP/mana)'%(min(player.mana, player_level*2+10))
+        formatLine(spell, player.spellbook)
+        messagePlayer(spell, player.index)
         
-        if player.getLevel() >= 3:
-            spell = '!cast Sacred Flame - 15 mana - %sd8 damage + burn (Dex save halves)'%(3+player.getLevel()/5)
+        if player_level >= 3:
+            spell = '!cast Sacred Flame - 15 mana - %sd8 damage + burn (Dex save halves)'%(3+player_level/5)
             formatLine(spell, player.spellbook)
-            messagePlayer('!cast Sacred Flame - 15 mana - %sd8 damage + burn (Dex save halves)'%(3+player.getLevel()/5), player.index)
+            messagePlayer(spell, player.index)
+
             spell = '!cast Bless - 10 mana - Increase chance for nearby allies to save'
             formatLine(spell, player.spellbook)
-            messagePlayer('!cast Bless - 10 mana - Increase chance for nearby allies to save', player.index)
+            messagePlayer(spell, player.index)
             
-        if player.getLevel() >= 5:
+        if player_level >= 5:
             spell = '!cast Spiritual Weapon {weapon} - 30 mana - Give yourself a weapon (give command)'
             formatLine(spell, player.spellbook)
-            messagePlayer('!cast Spiritual Weapon {weapon} - 30 mana - Give yourself a weapon (give command)', player.index) 
+            messagePlayer(spell, player.index)
+
             spell = '!cast Curse - 30 mana - Target takes additional 3d8 damage from all sources (Wisdom save negates)'
             formatLine(spell, player.spellbook)
-            messagePlayer('!cast Curse - 30 mana - Target takes additional 3d8 damage from all sources (Wisdom save negates)', player.index)
+            messagePlayer(spell, player.index)
             
-        if player.getLevel() >= 7:
-            player.channels = (player.getLevel() - 2) / 5
-            messagePlayer('!cast Channel Divinity - Unleash a burst of Healing/Good or Damage/Evil around you (5d8, %s uses)'%player.channels, player.index)
+        if player_level >= 7:
+            player.channels = (player_level - 2) / 5
             spell = '!cast Channel Divinity - Unleash a burst of Healing/Good or Damage/Evil around you (5d8, %s uses)'%player.channels
+            messagePlayer(spell, player.index)
             formatLine(spell, player.spellbook)
             
-        if player.getLevel() >= 9:
+        if player_level >= 9:
             spell = '!cast Death Ward - 20 Mana - The next killing blow on your target reduces them to 1HP instead'
             formatLine(spell, player.spellbook)
-            messagePlayer('!cast Death Ward - 20 Mana - The next killing blow on your target reduces them to 1HP instead', player.index)
+            messagePlayer(spell, player.index)
             
-        if player.getLevel() >= 11:
+        if player_level >= 11:
             spell = '!cast Banishment - 50 Mana - Banish a target, sends them back to spawn (Wis save negates)'
             formatLine(spell, player.spellbook)
-            messagePlayer('!cast Banishment - 50 Mana - Banish a target, sends them back to spawn', player.index)
+            messagePlayer(spell, player.index)
             
-        if player.getLevel() >= 15:
+        if player_level >= 15:
             spell = '!cast Spirit Guardians - 50 Mana - Weapons of your ancestors fire on attackers for 2s (3d8, Wisdom save halves)'
             formatLine(spell, player.spellbook)
-            messagePlayer('!cast Spirit Guardians - 50 Mana - Weapons of your ancestors fire on attackers for 2s (3d8, Wisdom save halves)', player.index)
+            messagePlayer(spell, player.index)
         
-        if player.getLevel() >= 20:
+        if player_level >= 20:
             spell = '!cast True Ressurection - 100 Mana - Bring back an ally from the dead'
             formatLine(spell, player.spellbook)
-            messagePlayer('!cast True Ressurection - 100 Mana - Bring back an ally from the dead', player.index)
+            messagePlayer(spell, player.index)
             
-    if player.getClass() == rogue.name:
-        player.stealth = time.time() - 7
+    if player_class == rogue.name:
+        time = time.time()
+
+        player.stealth = time - 7
         player.stealthMessage = False
         player.stealthChecks = {}
-        messagePlayer('You are stealthed. After shooting, jumping, using an ability, or being shot, you restealth after {:.2f} seconds'.format(6.225 - player.getLevel()*(4.5/20) - (1 if player.getRace() == halfling.name else 0)), player.index)
-        messagePlayer('While stealthed, you can Sneak Attack (%sd6 SA dice)'%int((player.getLevel()+3)/2 - 1), player.index)
+        messagePlayer('You are stealthed. After shooting, jumping, using an ability, or being shot, you restealth after {:.2f} seconds'.format(6.225 - player_level*(4.5/20) - (1 if player_race == halfling.name else 0)), player.index)
+        messagePlayer('While stealthed, you can Sneak Attack (%sd6 SA dice)'%int((player_level+3)/2 - 1), player.index)
         
-        if player.getLevel() >= 3:
-            player.endurance = 3 + (player.getLevel() - 3) * (3/17)
-            player.dashCooldown = time.time() - 4
-            player.lastTimeTick = time.time()
+        if player_level >= 3:
+            player.endurance = 3 + (player_level - 3) * (3/17)
+            player.dashCooldown = time - 4
+            player.lastTimeTick = time
             player.dashMessage = False            
             messagePlayer('You can now dash! Hold your walk key to run! (3s)', player.index)
             messagePlayer('You can now steal money and guns from your opponent! Get close and attack!', player.index)
             
-        if player.getLevel() >= 5:
+        if player_level >= 5:
             messagePlayer('You are Evasive and have advantage on Dexterity saves!', player.index)
             
-        if player.getLevel() >= 11:
+        if player_level >= 11:
             messagePlayer('You are Elusive and can not be crit!', player.index)
             
-        if player.getLevel() >= 20:
+        if player_level >= 20:
             messagePlayer('You are an Assassin! Sneak Attack players not facing you!', player.index)
             
-    if player.getClass() == sorcerer.name:
-        player.mana = int(player.getLevel() / 2) * 5 + int(player.getLevel() / 2) * 10 + (10 if player.getLevel() % 2 else 0) + 5
+    if player_class == sorcerer.name:
+        player.mana = player.max_mana
         messagePlayer('You have %s mana to cast spells with'%player.mana, player.index)
         
         spell = '!cast Prestidigitation - 10 mana - Throws a fake flashbang to freak out enemies'
         formatLine(spell, player.spellbook)
-        messagePlayer('!cast Prestidigitation - 10 mana - Throws a fake flashbang to freak out enemies', player.index)
+        messagePlayer(spell, player.index)
+
         spell = '!cast Mage Armor - 10 mana - Create a magical set of armor for yourself'
         formatLine(spell, player.spellbook)
-        messagePlayer('!cast Mage Armor - 10 mana - Create a magical set of armor for yourself', player.index)
+        messagePlayer(spell, player.index)
         
-        if player.getLevel() >= 2:
+        if player_level >= 2:
             spell = '!cast Magic Missile - 10 mana - Deal 3d4+5 damage to a target'
             formatLine(spell, player.spellbook)
-            messagePlayer('!cast Magic Missile - 10 mana - Deal 3d4+5 damage to a target', player.index)
+            messagePlayer(spell, player.index)
+
             spell = '!cast Thunderwave - 10 mana - Push enemies away from you and deal 2d8 damage (Con save halves, no push)'
             formatLine(spell, player.spellbook)
-            messagePlayer('!cast Thunderwave - 10 mana - Push enemies away from you and deal 2d8 damage (Con save halves, no push)', player.index)
+            messagePlayer(spell, player.index)
             
-        if player.getLevel() >= 3:
+        if player_level >= 3:
             spell = '!cast Alter Self - 10 mana - Disguise yourself as an enemy'
             formatLine(spell, player.spellbook)
-            messagePlayer('!cast Alter Self - 10 mana - Disguise yourself as an enemy', player.index)
+            messagePlayer(spell, player.index)
+
             spell = '!cast Brightness - 20 mana - Create a blindingly-bright light that follows you (2.5s)'
             formatLine(spell, player.spellbook)
-            messagePlayer('!cast Brightness - 20 mana - Create a blindingly-bright light that follows you (2.5s)', player.index)
+            messagePlayer(spell, player.index)
             
-        if player.getLevel() >= 4:
+        if player_level >= 4:
             spell = '!cast Acid Splash - 20 mana - Removes all enemies armor in an area (Dex save negates)'
             formatLine(spell, player.spellbook)
-            messagePlayer('!cast Acid Splash - 20 mana - Removes all enemies armor in an area (Dex save negates)', player.index)
+            messagePlayer(spell, player.index)
             
-        if player.getLevel() >= 5:
+        if player_level >= 5:
             spell = '!cast Misty Step - 25 mana - Teleport forward to where you are looking! (Wall safe)'
             formatLine(spell, player.spellbook)
-            messagePlayer('!cast Misty Step - 25 mana - Teleport forward to where you are looking! (Wall safe)', player.index)
+            messagePlayer(spell, player.index)
+
             spell = '!cast Fireball - 30 mana - Shoot a fireball where you\'re looking! (5d8, Dex save halves)'
             formatLine(spell, player.spellbook)
-            messagePlayer('!cast Fireball - 30 mana - Shoot a fireball where you\'re looking! (5d8, Dex save halves)', player.index)
+            messagePlayer(spell, player.index)
             
-        if player.getLevel() >= 7:
+        if player_level >= 7:
             spell = '!cast Silence - 35 mana - Silences everyone in an area you\'re looking at for 5s'
             formatLine(spell, player.spellbook)
-            messagePlayer('!cast Silence - 35 mana - Silences everyone in an area you\'re looking at for 5s', player.index)
+            messagePlayer(spell, player.index)
+
             spell = '!cast Confusion - 50 mana - All players have a random skin'
             formatLine(spell, player.spellbook)
-            messagePlayer('!cast Confusion - 50 mana - All players have a random skin', player.index)
+            messagePlayer(spell, player.index)
         
-        if player.getLevel() >= 9:
+        if player_level >= 9:
             spell = '!cast Greater Invisibility - 40 mana - Become invisible for 3s'
             formatLine(spell, player.spellbook)
-            messagePlayer('!cast Greater Invisibility - 40 mana - Become invisible for 3s', player.index)
+            messagePlayer(spell, player.index)
+
             spell = '!cast Polymorph - 40 mana - Turn an enemy into a chicken for 3s (Wis negates)'
             formatLine(spell, player.spellbook)
-            messagePlayer('!cast Polymorph - 40 mana - Turn an enemy into a chicken for 3s (Wis negates)', player.index)
+            messagePlayer(spell, player.index)
             
-        if player.getLevel() >= 11:
+        if player_level >= 11:
             spell = "!cast Wall of Fire - 50 mana - Create a wall of fire for 3s that burns for 5d8 (Dex halves)"
             formatLine(spell, player.spellbook)
             messagePlayer(spell, player.index)
@@ -1701,28 +1902,28 @@ def spawnPlayer(e):
             formatLine(spell, player.spellbook)
             messagePlayer(spell, player.index)
             
-        if player.getLevel() >= 13:
+        if player_level >= 13:
             spell = "!cast True Seeing - 40 mana - Reveals hidden enemies nearby (10s)"
             formatLine(spell, player.spellbook)
             messagePlayer(spell, player.index)
             
-        if player.getLevel() >= 15:
+        if player_level >= 15:
             spell = "!cast Chain Lightning - 80 mana - Strike a target, then three others nearby for 7d8 (Dex save halves)"
             formatLine(spell, player.spellbook)
             messagePlayer(spell, player.index)
             
-        if player.getLevel() >= 17:
+        if player_level >= 17:
             spell = "!cast Delayed Blast Fireball - 100 mana - Fire a missile that explodes (if still alive) after 3s for 10d8 (Dex halves)"
             formatLine(spell, player.spellbook)
             messagePlayer(spell, player.index)
             
-        if player.getLevel() >= 20:
+        if player_level >= 20:
             spell = "!cast Fly - 120 mana - Look where you want to move to!"
             formatLine(spell, player.spellbook)
             messagePlayer(spell, player.index)
             
-    if player.getClass() == paladin.name:
-        player.mana = int(player.getLevel() / 2) * 5 + int(player.getLevel() / 2) * 10 + (10 if player.getLevel() % 2 else 0) + 5
+    if player_class == paladin.name:
+        player.mana = player.max_mana
         messagePlayer('You have %s mana to cast spells with'%player.mana, player.index)
         messagePlayer('Two Weapon Fighting - Deal 10% more Damage', player.index)
         
@@ -1730,10 +1931,10 @@ def spawnPlayer(e):
         messagePlayer(spell, player.index)
         formatLine(spell, player.spellbook)
         
-        if player.getLevel() >= 2:
+        if player_level >= 2:
             smiteDamage = 1
             smiteMana = 7
-            if player.getLevel() >= 9:
+            if player_level >= 9:
                 smiteDamage += 1
                 smiteMana *= 2
             player.smite = False
@@ -1857,7 +2058,8 @@ def cast(command, index):
         if ability.lower() not in toggles:
             messagePlayer("'%s' is not an ability"%ability, index)
             return
-    player = players.from_userid(userid_from_index(index))
+
+    player = players[index]
         
     if ability.lower() in abilities:
         if not player.dead:      
@@ -1867,21 +2069,32 @@ def cast(command, index):
                     if ability.lower() == 'breath weapon':
                         if player.breathweapon:
                             player.breathweapon = 0
-                            loc = player.origin + player.view_vector*75
-                            createFire(loc, 1.5)
-                            playSound('weapons/molotov/fire_ignite_1.wav', point=loc)
+
                             damage = dice(3,8)
-                            for target in PlayerIter():
-                                if target.get_team() != player.get_team() and not target.dead and Vector.get_distance(target.origin, player.origin) <= 400:
-                                    target = players.from_userid(target.userid)
-                                    if not diceCheck((10 + player.getProficiencyBonus(), 'Constitution'), target, player):
-                                        hurt(player, target, damage)
-                                        messagePlayer('A Dragonborn torched you!', target.index)
-                                        messagePlayer('You torched %s!'%target.name, player.index)
-                                    else:
-                                        hurt(player, target, int(damage/2))
-                                        messagePlayer('A Dragonborn spit fire at you!', target.index)
-                                        messagePlayer('You spit fire at %s!'%target.name, player.index)
+                            origin = player.origin
+                            proficiency = player.getProficiencyBonus()
+                            loc = origin + player.view_vector * 75
+
+                            createFire(loc, 1.5)
+                            playSound(
+                                'weapons/molotov/fire_ignite_1.wav', point=loc)
+
+                            for target in player.get_valid_targets():
+                                # Is the target somewhat far?
+                                if origin.get_distance(target.origin) > 400:
+                                    # Skip them.
+                                    continue
+                                
+                                target = players[target.index]
+                                if not diceCheck((10 + proficiency, 'Constitution'), target, player):
+                                    hurt(player, target, damage)
+                                    messagePlayer('A Dragonborn torched you!', target.index)
+                                    messagePlayer(f'You torched {target.name}!', player.index)
+                                else:
+                                    hurt(player, target, int(damage/2))
+                                    messagePlayer('A Dragonborn spit fire at you!', target.index)
+                                    messagePlayer(f'You spit fire at {target.name}!', player.index)
+
                         else:
                             messagePlayer('You already used your Breath Weapon this round!', player.index)
                 
@@ -1983,8 +2196,6 @@ def cast(command, index):
                                         player.spellCooldown=time.time()      
                                     else:
                                         messagePlayer('They\'re full hp!', player.index)
-                                
-                        
                             
                     if ability.lower() == 'sacred flame':
                         if not player.getLevel() >= 3:
@@ -2019,17 +2230,14 @@ def cast(command, index):
                             return
                         player.mana -= 10
                         player.spellCooldown = time.time()
-                        for target in PlayerIter():
-                            if target.team == player.team and not target.dead:
-                                if Vector.get_distance(target.origin, player.origin) < 500:
-                                    if not hasattr(target.bless):
-                                        target.bless = True
-                                        messagePlayer('You have been Blessed by a Cleric. Increases your chance to make saves!', target.index)
-                                    else:
-                                        if not target.bless:
-                                            target.bless = True
-                                            messagePlayer('You have been Blessed by a Cleric. Increases your chance to make saves!', target.index)
-                                    
+                        origin = player.origin
+
+                        for teammate in player.get_teammates():
+                            if origin.get_distance(teammate.origin) > 500:
+                                continue
+                            
+                            teammate.bless = True
+                            messagePlayer('You have been Blessed by a Cleric. Increases your chance to make saves!', target.index)
                             
                     if ability.lower() == 'spiritual weapon':
                         if not player.getLevel() >= 5:
@@ -2302,7 +2510,8 @@ def cast(command, index):
                         target = player.get_view_player()
                         if not target:
                             return
-                        target = players.from_userid(target.userid)
+
+                        target = players[target.index]
                         if not target.dead and target.get_team() != player.get_team():
                             player.mana -= 10
                             player.spellCooldown = time.time()        
@@ -2320,24 +2529,29 @@ def cast(command, index):
                             return
                         
                         player.mana -= 10
-                        player.spellCooldown = time.time()    
-                        targets = list(PlayerIter())
+                        player.spellCooldown = time.time()
                         playSound('weapons/flashbang/flashbang_explode2.wav', player=player)
-                        if not thunder_sound.is_precached:
-                            thunder_sound.precache()
-                        thunder_sound.play()
-                        for target in targets:
-                            if Vector.get_distance(target.origin, player.origin) < 500:
-                                target = players.from_userid(target.userid)
-                                if not target.dead and target.get_team() != player.get_team():
-                                    damage = dice(2,8)
-                                    if not diceCheck((11+player.getProficiencyBonus(), 'Constitution'), target, player):
-                                        hurt(player, target, damage)
-                                        push(player, target)
-                                        messagePlayer('A Thunderwave blasts away %s for %s damage!'%(target.name, damage), player.index)
-                                    else:
-                                        hurt(player, target, damage/2)
-                                        messagePlayer('A Thunderwave blasts did %s damage!'%(damage), player.index)
+
+                        # BUG: NameError: name 'thunder_sound' is not defined.
+                        # if not thunder_sound.is_precached:
+                        #     thunder_sound.precache()
+                        # thunder_sound.play()
+
+                        origin = player.origin
+                        proficiency = player.getProficiencyBonus()
+
+                        for target in player.get_valid_targets():
+                            if origin.get_distance(target.origin) < 500:
+                                target = players[target.index]
+                                damage = dice(2,8)
+
+                                if not diceCheck((11 + proficiency, 'Constitution'), target, player):
+                                    hurt(player, target, damage)
+                                    push(player, target)
+                                    messagePlayer('A Thunderwave blasts away %s for %s damage!'%(target.name, damage), player.index)
+                                else:
+                                    hurt(player, target, int(damage/2))
+                                    messagePlayer('A Thunderwave blasts did %s damage!'%(damage), player.index)
                                         
                     if ability.lower() == 'alter self':
                         if not player.getLevel() >= 3:
@@ -2348,9 +2562,12 @@ def cast(command, index):
                         
                         player.mana -= 10
                         player.spellCooldown = time.time()                        
-                        mdl = random.choice(counterTerroristModels if player.get_team() == 2 else terroristModels)
-                        player.model = Model('models/player/%s'%mdl)
-                        messagePlayer('You have disguised yourself!', player.index)
+
+                        # Get the team index of the opposite team.
+                        other_team = [3, 2][player.team - 2]
+                        model, arms = random.choice(player_models[other_team])
+                        player.change_model(model_name=model, arms_name=arms)
+                        messagePlayer('You have disguised yourself!', index)
                         
                     if ability.lower() == 'brightness':
                         if not player.getLevel() >= 3:
@@ -2363,7 +2580,7 @@ def cast(command, index):
                         player.spellCooldown = time.time()   
                         
                         for x in range(1,25):
-                            Delay(x/10, flashPlayer, (player,))
+                            player.delay(x / 10, flashPlayer, (player,))
                             
                     if ability.lower() == 'acid splash':
                         if not player.getLevel() >= 4:
@@ -2379,16 +2596,21 @@ def cast(command, index):
                         player.mana -= 20
                         player.spellCooldown = time.time()   
                         
-                        for t in PlayerIter():
-                            if t.get_team() != player.get_team() and not t.dead:
-                                if Vector.get_distance(player.origin, t.origin) <= 500:
-                                    t = players.from_userid(t.userid)
-                                    playSound('player/water/pl_wade2.wav', player=t)
-                                    if not diceCheck((11+player.getProficiencyBonus(), 'Dexterity'), t, player):
-                                        t.armor = 0
-                                        t.has_helmet = False
-                                        messagePlayer('You melted %s\'s armor!'%t.name, player.index)
-                                        messagePlayer('Your armor was melted!',t.index)
+                        origin = player.origin
+                        proficiency = player.getProficiencyBonus()
+
+                        for t in player.get_valid_targets():
+                            if origin.get_distance(t.origin) <= 500:
+                                t = players[t.index]
+
+                                playSound(
+                                    'player/water/pl_wade2.wav', player=t)
+                                
+                                if not diceCheck((11 + proficiency, 'Dexterity'), t, player):
+                                    t.armor = 0
+                                    t.has_helmet = False
+                                    messagePlayer(f'You melted {t.name}\'s armor!', player.index)
+                                    messagePlayer('Your armor was melted!', t.index)
                                         
                     if ability.lower() == 'misty step':
                         if not player.getLevel() >= 5:
@@ -2484,14 +2706,13 @@ def cast(command, index):
                             return
                             
                         player.mana -= 35
-                        player.spellCooldown = time.time()   
-                        
-                        point = player.get_view_coordinates()                            
+                        player.spellCooldown = time.time()
                         messageServer('You have become confused!')
-                        for t in PlayerIter():
-                            if not t.dead:
-                                models = list(chain(counterTerroristModels, terroristModels))
-                                t.model = Model('models/player/%s'%random.choice(models))
+
+                        for _player in PlayerIter('alive'):
+                            model, arms = random.choice(_all_player_models)
+                            _player.change_model(
+                                model_name=model, arms_name=arms)
                                     
                     if ability.lower() == 'greater invisibility':
                         if not player.getLevel() >= 9:
@@ -2505,7 +2726,7 @@ def cast(command, index):
                         
                         player.color = Color(255,255,255).with_alpha(0)
                         messagePlayer('You are now invisible!', player.index)
-                        Delay(3, resetColor, (player,))
+                        player.delay(3, resetColor, (player,))
                             
                     if ability.lower() == 'polymorph':
                         if not player.getLevel() >= 9:
@@ -2517,7 +2738,7 @@ def cast(command, index):
                         target = player.get_view_player()
                         if not target:
                             return
-                        target = players.from_userid(target.userid)
+                        target = players[target.index]
                         if target.get_team() != player.get_team() and not target.dead:
                             player.mana -= 40
                             player.spellCooldown = time.time()   
@@ -2527,9 +2748,9 @@ def cast(command, index):
                                 target.model = Model('models/chicken/chicken.mdl')
                                 playSound('ambient/creatures/chicken_panic_03.wav', point=target.origin)
                                 for weapon in target.weapons():
-                                    Delay(3, target.give_named_item, (weapon.weapon_name, 0, None, False, NULL))
+                                    target.delay(3, target.give_named_item, (weapon.weapon_name, 0, None, False, NULL))
                                     weapon.remove()
-                                Delay(3, resetModel, (target, mdl))       
+                                target.delay(3, resetModel, (target, mdl))       
                                 messagePlayer('You have been Polymorphed into a chicken!', target.index)
                                     
                     if ability.lower() == 'wall of fire':
@@ -2644,15 +2865,15 @@ def cast(command, index):
                         Delay(3, checkMissile, (flashbang, player))
                         
                 if ability.lower() == 'fly':
-                        if not player.getLevel() >= 20:
-                            return
-                        if not player.mana >= 120:
-                            messagePlayer('You do not have enough mana for this spell (Have %s/ Need %s)'%(player.mana, 120), player.index)
-                            return
-                            
-                        player.mana -= 120
-                        player.spellCooldown = time.time()
-                        player.set_jetpack(True)
+                    if not player.getLevel() >= 20:
+                        return
+                    if not player.mana >= 120:
+                        messagePlayer('You do not have enough mana for this spell (Have %s/ Need %s)'%(player.mana, 120), player.index)
+                        return
+                        
+                    player.mana -= 120
+                    player.spellCooldown = time.time()
+                    player.set_jetpack(True)
                                 
                     
             else:
@@ -2693,7 +2914,14 @@ def cast(command, index):
                         
     
     return CommandReturn.BLOCK
-    
+
+
+@ClientCommand('!cast')
+def silence_cast_command(command, index):
+    # Fix for getting 'Unknown command: !cast' when out of mana.
+    return CommandReturn.BLOCK
+
+
 def playSound(sound, point=None, player=None, duration=False):
     if not point and not player:
         for p in PlayerIter():
@@ -2781,7 +3009,7 @@ def createFire(point, duration):
     particle2.effect_index = string_tables.ParticleEffectNames.add_string('molotov_groundfire')
     particle2.start_active = 1
     particle2.start()
-    Delay(duration, particle2.remove)
+    particle2.delay(duration, particle2.remove)
     
 def resetModel(player, mdl):
     player.model = mdl
@@ -2833,7 +3061,7 @@ def fakeFlash(player):
     flashbang.spawn()
     flashbang.origin = player.eye_location + player.view_vector * 30
     flashbang.teleport(None, flashbang.angles, player.view_vector * 1500)
-    Delay(1.6, flashbang.remove)
+    flashbang.delay(1.6, flashbang.remove)
             
 def newWeapon():
     m4a1 = ('weapon_m4a1', Model('models/weapons/w_rif_m4a1.mdl'))
