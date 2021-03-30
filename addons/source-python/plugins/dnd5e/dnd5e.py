@@ -408,10 +408,12 @@ class RPGPlayer(Player):
         self.toggleDelay = 0
         self.crit = False
         self.saves = []
+        self.spell_names = []
         self.spellbook = None
         self.controllingbot = False
         self.queuedrace = None
         self.queuedclass = None
+
         if getSteamid(self.userid) in database:
             self.stats = database[getSteamid(self.userid)]
         else:
@@ -419,6 +421,7 @@ class RPGPlayer(Player):
             self.setClass(DNDClass.defaultClass.name)
             self.stats['Gold'] = 0
             database[getSteamid(self.userid)] = self.stats
+
         self.setDefaults()    
         
     def setDefaults(self):
@@ -677,9 +680,17 @@ class RPGPlayer(Player):
         
 players = PlayerDictionary(RPGPlayer)
 
-def formatLine(line, menu):
-
+def formatLine(line, menu, index=None):
     line = line.split(' ')
+    
+    if index is not None:
+        player = players[index]
+        spell_name = ' '.join(line[1:line.index('-')])
+
+        if spell_name not in player.spell_names:
+            # Add the name of the spell to the list.
+            player.spell_names.append(spell_name)
+
     desc = ''
     i = 0
     while line:
@@ -731,7 +742,7 @@ def createConfirmationMenu(obj, index):
 def dndMenuSelect(menu, index, choice):    
     if choice.value:
         if choice.value == 'spellbook':
-            players.from_userid(userid_from_index(index)).spellbook.send(index)
+            players[index].spellbook.send(index)
         else:
             choice.value.send(index)    
             
@@ -1053,7 +1064,7 @@ def spells_command(command, index, team_only):
     players[index].spellbook.send(index)
     return CommandReturn.BLOCK
 
-    
+
 @Event('player_say')
 def playerSay(e):
     global database
@@ -1712,15 +1723,20 @@ def startedRound(e):
         
 @Event('player_spawn')
 def spawnPlayer(e):
+    """Called when a player spawns."""
     player = players.from_userid(e['userid'])
+    index = player.index
     player.mana = 0
     
     if player.queuedclass:
         player.setClass(player.queuedclass)
         player.queuedclass = None
+        player.spell_names.clear()
+
     if player.queuedrace:
         player.setRace(player.queuedrace)
         player.queuedrace = None
+        player.spell_names.clear()
         
     player.requestStats()
     
@@ -1735,47 +1751,47 @@ def spawnPlayer(e):
     if player_level <= 2:
         if hasattr(player, 'sentmenu'):
             if not player.sentmenu:
-                messagePlayer('Type "menu" to access the main menu.', player.index)
-                dndMenu.send(player.index)
+                messagePlayer('Type "menu" to access the main menu.', index)
+                dndMenu.send(index)
                 player.sentmenu = True
         else:
-            messagePlayer('Type "menu" to access the main menu.', player.index)
-            dndMenu.send(player.index)
+            messagePlayer('Type "menu" to access the main menu.', index)
+            dndMenu.send(index)
             player.sentmenu = True
     
     if player_race == dwarf.name:
         player.maxhealth += 25
         player.health = player.maxhealth
-        messagePlayer('You are a hardy Dwarf! You have gained 25HP', player.index)
+        messagePlayer('You are a hardy Dwarf! You have gained 25HP', index)
         
     if player_race == dragonborn.name:
         player.breathweapon = 1
         spell = '!cast Breath Weapon - Breath Fire on your enemies!'
-        messagePlayer(spell, player.index)
-        formatLine(spell, player.spellbook)
+        messagePlayer(spell, index)
+        formatLine(spell, player.spellbook, index)
         
     if player_race == tiefling.name:
         player.darkness = 1
         spell = '!cast Darkness - Creates blinding cloud where you look!'
-        messagePlayer(spell, player.index)
-        formatLine(spell, player.spellbook)
+        messagePlayer(spell, index)
+        formatLine(spell, player.spellbook, index)
         
     if player_class == fighter.name:
         player.secondWind = 1
-        messagePlayer('You gained 10% damage from Greater Weapon Fighting!', player.index)
+        messagePlayer('You gained 10% damage from Greater Weapon Fighting!', index)
         
         if player_level >= 3:
-            messagePlayer('You have an extra 5% chance to score a critical hit!', player.index)
-            messagePlayer('Your crits cleave into nearby enemmies!', player.index)
+            messagePlayer('You have an extra 5% chance to score a critical hit!', index)
+            messagePlayer('Your crits cleave into nearby enemmies!', index)
             
         if player_level >= 5:
-            messagePlayer('You deal an extra 5% damage for having an Extra Attack!', player.index)
+            messagePlayer('You deal an extra 5% damage for having an Extra Attack!', index)
         
         if player_level >= 7:
             player.disarms = int((player_level - 2) / 5)   #+ 10000
             spell = f'!cast Disarm - {player.disarms} Charges - Disarms enemies primary weapon. (Str save negates)'
-            messagePlayer(spell, player.index)
-            formatLine(spell, player.spellbook)
+            messagePlayer(spell, index)
+            formatLine(spell, player.spellbook, index)
             player.disarm = False
         
         if player_level >= 9:
@@ -1783,86 +1799,86 @@ def spawnPlayer(e):
         if player_level >= 13:
             player.indomitable = 2            
         if player_level >= 9:
-            messagePlayer('You are now Indomitable (Advantage on %s failed saves)'%player.indomitable, player.index)
+            messagePlayer('You are now Indomitable (Advantage on %s failed saves)'%player.indomitable, index)
             
         if player_level >= 10:
-            messagePlayer('You have a 5% chance to parry attacks!', player.index)
+            messagePlayer('You have a 5% chance to parry attacks!', index)
             
         if player_level >= 11:
-            messagePlayer('You deal an extra 5% damage for having another Extra Attack!', player.index)
+            messagePlayer('You deal an extra 5% damage for having another Extra Attack!', index)
             
         if player_level >= 15:
-            messagePlayer('You have an extra 5% chance to score a critical hit! A 15% Chance!!!', player.index)
+            messagePlayer('You have an extra 5% chance to score a critical hit! A 15% Chance!!!', index)
             
         if player_level >= 20:
-            messagePlayer('You are a Survivor! Heal 10HP every kill!', player.index)
+            messagePlayer('You are a Survivor! Heal 10HP every kill!', index)
             
     if player_class == cleric.name:
         player.mana = player.max_mana
-        messagePlayer(f'You have {player.mana} mana to cast spells with', player.index)
+        messagePlayer(f'You have {player.mana} mana to cast spells with', index)
 
         if not hasattr(player, 'alignment'):
             player.alignment = 'good'
         if player.alignment == 'good':
-            messagePlayer('You are a Good Cleric and do 20% more Curing', player.index)
+            messagePlayer('You are a Good Cleric and do 20% more Curing', index)
         else:
-            messagePlayer('You are an Evil Cleric and cause 20% more Wounds', player.index)
+            messagePlayer('You are an Evil Cleric and cause 20% more Wounds', index)
 
         spell = '!cast {Evil/Good} - You can change your alignment'
-        messagePlayer(spell, player.index)
-        formatLine(spell, player.spellbook)
+        messagePlayer(spell, index)
+        formatLine(spell, player.spellbook, index)
         
         spell = '!cast Inflict {amount} / !cast Cure {amount}'
-        formatLine(spell, player.spellbook)
-        messagePlayer(spell, player.index)
+        formatLine(spell, player.spellbook, index)
+        messagePlayer(spell, index)
 
         spell = 'Inflict to deal damage, Cure to heal. Spend up to %s mana (1HP/mana)'%(min(player.mana, player_level*2+10))
-        formatLine(spell, player.spellbook)
-        messagePlayer(spell, player.index)
+        formatLine(spell, player.spellbook, index)
+        messagePlayer(spell, index)
         
         if player_level >= 3:
             spell = '!cast Sacred Flame - 15 mana - %sd8 damage + burn (Dex save halves)'%(3+player_level/5)
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
 
             spell = '!cast Bless - 10 mana - Increase chance for nearby allies to save'
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
             
         if player_level >= 5:
             spell = '!cast Spiritual Weapon {weapon} - 30 mana - Give yourself a weapon (give command)'
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
 
             spell = '!cast Curse - 30 mana - Target takes additional 3d8 damage from all sources (Wisdom save negates)'
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
             
         if player_level >= 7:
             player.channels = (player_level - 2) / 5
             spell = '!cast Channel Divinity - Unleash a burst of Healing/Good or Damage/Evil around you (5d8, %s uses)'%player.channels
-            messagePlayer(spell, player.index)
-            formatLine(spell, player.spellbook)
+            messagePlayer(spell, index)
+            formatLine(spell, player.spellbook, index)
             
         if player_level >= 9:
             spell = '!cast Death Ward - 20 Mana - The next killing blow on your target reduces them to 1HP instead'
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
             
         if player_level >= 11:
             spell = '!cast Banishment - 50 Mana - Banish a target, sends them back to spawn (Wis save negates)'
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
             
         if player_level >= 15:
             spell = '!cast Spirit Guardians - 50 Mana - Weapons of your ancestors fire on attackers for 2s (3d8, Wisdom save halves)'
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
         
         if player_level >= 20:
             spell = '!cast True Ressurection - 100 Mana - Bring back an ally from the dead'
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
             
     if player_class == rogue.name:
         time = time.time()
@@ -1870,125 +1886,125 @@ def spawnPlayer(e):
         player.stealth = time - 7
         player.stealthMessage = False
         player.stealthChecks = {}
-        messagePlayer('You are stealthed. After shooting, jumping, using an ability, or being shot, you restealth after {:.2f} seconds'.format(6.225 - player_level*(4.5/20) - (1 if player_race == halfling.name else 0)), player.index)
-        messagePlayer('While stealthed, you can Sneak Attack (%sd6 SA dice)'%int((player_level+3)/2 - 1), player.index)
+        messagePlayer('You are stealthed. After shooting, jumping, using an ability, or being shot, you restealth after {:.2f} seconds'.format(6.225 - player_level*(4.5/20) - (1 if player_race == halfling.name else 0)), index)
+        messagePlayer('While stealthed, you can Sneak Attack (%sd6 SA dice)'%int((player_level+3)/2 - 1), index)
         
         if player_level >= 3:
             player.endurance = 3 + (player_level - 3) * (3/17)
             player.dashCooldown = time - 4
             player.lastTimeTick = time
             player.dashMessage = False            
-            messagePlayer('You can now dash! Hold your walk key to run! (3s)', player.index)
-            messagePlayer('You can now steal money and guns from your opponent! Get close and attack!', player.index)
+            messagePlayer('You can now dash! Hold your walk key to run! (3s)', index)
+            messagePlayer('You can now steal money and guns from your opponent! Get close and attack!', index)
             
         if player_level >= 5:
-            messagePlayer('You are Evasive and have advantage on Dexterity saves!', player.index)
+            messagePlayer('You are Evasive and have advantage on Dexterity saves!', index)
             
         if player_level >= 11:
-            messagePlayer('You are Elusive and can not be crit!', player.index)
+            messagePlayer('You are Elusive and can not be crit!', index)
             
         if player_level >= 20:
-            messagePlayer('You are an Assassin! Sneak Attack players not facing you!', player.index)
+            messagePlayer('You are an Assassin! Sneak Attack players not facing you!', index)
             
     if player_class == sorcerer.name:
         player.mana = player.max_mana
-        messagePlayer('You have %s mana to cast spells with'%player.mana, player.index)
+        messagePlayer('You have %s mana to cast spells with'%player.mana, index)
         
         spell = '!cast Prestidigitation - 10 mana - Throws a fake flashbang to freak out enemies'
-        formatLine(spell, player.spellbook)
-        messagePlayer(spell, player.index)
+        formatLine(spell, player.spellbook, index)
+        messagePlayer(spell, index)
 
         spell = '!cast Mage Armor - 10 mana - Create a magical set of armor for yourself'
-        formatLine(spell, player.spellbook)
-        messagePlayer(spell, player.index)
+        formatLine(spell, player.spellbook, index)
+        messagePlayer(spell, index)
         
         if player_level >= 2:
             spell = '!cast Magic Missile - 10 mana - Deal 3d4+5 damage to a target'
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
 
             spell = '!cast Thunderwave - 10 mana - Push enemies away from you and deal 2d8 damage (Con save halves, no push)'
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
             
         if player_level >= 3:
             spell = '!cast Alter Self - 10 mana - Disguise yourself as an enemy'
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
 
             spell = '!cast Brightness - 20 mana - Create a blindingly-bright light that follows you (2.5s)'
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
             
         if player_level >= 4:
             spell = '!cast Acid Splash - 20 mana - Removes all enemies armor in an area (Dex save negates)'
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
             
         if player_level >= 5:
             spell = '!cast Misty Step - 25 mana - Teleport forward to where you are looking! (Wall safe)'
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
 
             spell = '!cast Fireball - 30 mana - Shoot a fireball where you\'re looking! (5d8, Dex save halves)'
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
             
         if player_level >= 7:
             spell = '!cast Silence - 35 mana - Silences everyone in an area you\'re looking at for 5s'
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
 
             spell = '!cast Confusion - 50 mana - All players have a random skin'
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
         
         if player_level >= 9:
             spell = '!cast Greater Invisibility - 40 mana - Become invisible for 3s'
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
 
             spell = '!cast Polymorph - 40 mana - Turn an enemy into a chicken for 3s (Wis negates)'
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
             
         if player_level >= 11:
             spell = "!cast Wall of Fire - 50 mana - Create a wall of fire for 3s that burns for 5d8 (Dex halves)"
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
             
             spell = "!cast Stoneshape - 40 mana - Shape a wall of stone to hide behind (450HP)"
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
             
         if player_level >= 13:
             spell = "!cast True Seeing - 40 mana - Reveals hidden enemies nearby (10s)"
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
             
         if player_level >= 15:
             spell = "!cast Chain Lightning - 80 mana - Strike a target, then three others nearby for 7d8 (Dex save halves)"
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
             
         if player_level >= 17:
             spell = "!cast Delayed Blast Fireball - 100 mana - Fire a missile that explodes (if still alive) after 3s for 10d8 (Dex halves)"
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
             
         if player_level >= 20:
             spell = "!cast Fly - 120 mana - Look where you want to move to!"
-            formatLine(spell, player.spellbook)
-            messagePlayer(spell, player.index)
+            formatLine(spell, player.spellbook, index)
+            messagePlayer(spell, index)
             
     if player_class == paladin.name:
         player.mana = player.max_mana
-        messagePlayer('You have %s mana to cast spells with'%player.mana, player.index)
-        messagePlayer('Two Weapon Fighting - Deal 10% more Damage', player.index)
+        messagePlayer('You have %s mana to cast spells with'%player.mana, index)
+        messagePlayer('Two Weapon Fighting - Deal 10% more Damage', index)
         
         spell = "!cast Shield - 10 mana - 10% Damage Reduction for 10s to target"
-        messagePlayer(spell, player.index)
-        formatLine(spell, player.spellbook)
+        messagePlayer(spell, index)
+        formatLine(spell, player.spellbook, index)
         
         if player_level >= 2:
             smiteDamage = 1
@@ -1998,12 +2014,12 @@ def spawnPlayer(e):
                 smiteMana *= 2
             player.smite = False
             spell = "!cast Smite - Every attack spends %s mana to deal an extra %sd8 damage (toggles on/off)"%(smiteMana, smiteDamage)
-            messagePlayer(spell, player.index)
-            formatLine(spell, player.spellbook)
+            messagePlayer(spell, index)
+            formatLine(spell, player.spellbook, index)
             
             spell = '!cast Aura of Vitality - 10 mana - Heals an ally for 2d6, most hurt healed first'
-            messagePlayer(spell, player.index)
-            formatLine(spell, player.spellbook)
+            messagePlayer(spell, index)
+            formatLine(spell, player.spellbook, index)
             
 
 abilities = {
@@ -2078,7 +2094,8 @@ def forceDatabasePush(command, index):
                         else:
                             error("UNCAUGHT REQUEST ERROR - %s %s"%(steamid, name))
     messageServer('ONLINE DATABASE UPDATED WITH ALL PLAYERS')
-            
+
+
 @ClientCommand('reportbug')
 def bugReport(command,index):
     print('Bug submitted!')
@@ -2091,13 +2108,48 @@ def bugReport(command,index):
         
     messagePlayer('Thank you for submitting a bug. Please remind Aurora about your submission.', player.index)
 
+
+def spellbook_cast(menu, index, choice):
+    """Called when a player tries to cast a spell through their spellbook."""
+    player = players[index]
+    spell_name = choice.text
+
+    # Is the player trying to cast Cure or Inflict?
+    if spell_name in ('cure', 'inflict'):
+        # Set the default value for healing/damage.
+        spell_name += ' 10'
+
+    # Cast the spell.
+    player.client_command(command=f'!cast {spell_name}', server_side=True)
+    # Re-send the menu.
+    menu.send(index)
+
+
 @ClientCommand('!cast')
 def cast(command, index):
-    a = command.arg_string if len(command) > 1 else messagePlayer("You didn't specify an ability to use", index)
-    ability = a
+    """Command used to cast spells/abilities."""
+    player = players[index]
+    
+    # Did the player just type '!cast'?
+    if len(command) < 2:
+        # Missing spells?
+        if not player.spell_names:
+            return
+
+        PagedMenu(
+            data=[PagedOption(text=name) for name in player.spell_names],
+            select_callback=spellbook_cast,
+            title='[D&D] Spellbook'
+        ).send(index)
+
+        return
+    else:
+        a = command.arg_string
+
+    ability = a.lower()
     amount = None
     
-    if ability.lower().startswith('cure') or ability.lower().startswith('inflict'):
+    if ability.startswith('cure') or ability.startswith('inflict'):
         ability = ability.split(' ')[0]
         try:
             amount = int(a.split(' ')[1])
@@ -2105,7 +2157,7 @@ def cast(command, index):
             messagePlayer('You specify how much to heal/damage: !cast Cure 10', index)
             return
     
-    if ability.lower().startswith('spiritual weapon'):
+    if ability.startswith('spiritual weapon'):
         ability = 'spiritual weapon'
         try:
             amount = a.split(' ')[2]
@@ -2113,19 +2165,17 @@ def cast(command, index):
             messagePlayer('You need to specify which weapon: !cast Spiritual Weapon {weapon}', index)
             return
 
-    if ability.lower() not in abilities:
-        if ability.lower() not in toggles:
+    if ability not in abilities:
+        if ability not in toggles:
             messagePlayer("'%s' is not an ability"%ability, index)
             return
 
-    player = players[index]
-        
-    if ability.lower() in abilities:
+    if ability in abilities:
         if not player.dead:      
             if time.time() - player.spellCooldown > 1.5:
             
                 if player.getRace() == dragonborn.name:
-                    if ability.lower() == 'breath weapon':
+                    if ability == 'breath weapon':
                         if player.breathweapon:
                             player.breathweapon = 0
 
@@ -2167,7 +2217,7 @@ def cast(command, index):
                     particle.start()
                     
                 if player.getRace() == tiefling.name:
-                    if ability.lower() == 'darkness':
+                    if ability == 'darkness':
                         if player.darkness:
                             player.darkness = 0        
                             
@@ -2193,7 +2243,7 @@ def cast(command, index):
                             messagePlayer('You already used your Darkness this round!', player.index)
                 
                 if player.getClass() == fighter.name:
-                    if ability.lower() == 'second wind':
+                    if ability == 'second wind':
                         if not player.secondWind > 0:
                             messagePlayer('You no longer have a Second Wind!', index)
                             return
@@ -2212,7 +2262,7 @@ def cast(command, index):
                         messagePlayer('You don\'t have any mana', player.index)
                         return
                     
-                    if ability.lower() in ['inflict', 'cure']:
+                    if ability in ['inflict', 'cure']:
                         if not amount:
                             messagePlayer('You specify how much to heal/damage: !cast Cure 10', player.index)
                             return
@@ -2229,7 +2279,7 @@ def cast(command, index):
                         else:
                             target = players.from_userid(target.userid)
                         if target:
-                            if ability.lower() == 'inflict':
+                            if ability == 'inflict':
                                 if target.team != player.team and not target.dead:
                                     damage = amount
                                     if player.alignment == 'evil':
@@ -2242,7 +2292,7 @@ def cast(command, index):
                                     player.spellCooldown = time.time()
                                     player.mana -= amount
                                     
-                            if ability.lower() == 'cure':
+                            if ability == 'cure':
                                 if target.team == player.team and not target.dead:
                                     healing = amount
                                     if player.alignment == 'good':
@@ -2256,7 +2306,7 @@ def cast(command, index):
                                     else:
                                         messagePlayer('They\'re full hp!', player.index)
                             
-                    if ability.lower() == 'sacred flame':
+                    if ability == 'sacred flame':
                         if not player.getLevel() >= 3:
                             return
                         if not player.mana >= 15:
@@ -2281,7 +2331,7 @@ def cast(command, index):
                                 hurt(player, target, int(damage))
                                 target.ignite_lifetime(1.7+.2*player.getLevel())
                             
-                    if ability.lower() == 'bless':
+                    if ability == 'bless':
                         if not player.getLevel() >= 3:
                             return
                         if not player.mana >= 10:
@@ -2298,7 +2348,7 @@ def cast(command, index):
                             teammate.bless = True
                             messagePlayer('You have been Blessed by a Cleric. Increases your chance to make saves!', target.index)
                             
-                    if ability.lower() == 'spiritual weapon':
+                    if ability == 'spiritual weapon':
                         if not player.getLevel() >= 5:
                             return
                         if not player.mana >= 30:
@@ -2314,7 +2364,7 @@ def cast(command, index):
                         else:
                             messagePlayer('%s isn\'t a valid weapon name', player.index)
                             
-                    if ability.lower() == 'curse':
+                    if ability == 'curse':
                         if not player.getLevel() >= 5:
                             return
                         if not player.mana >= 30:
@@ -2334,7 +2384,7 @@ def cast(command, index):
                             else:
                                 messagePlayer('Your target resists your curse!', player.index)
                                 
-                    if ability.lower() == 'channel divinity':
+                    if ability == 'channel divinity':
                         if not player.getLevel() >= 7:
                             return
                         if not player.channels > 0:
@@ -2362,7 +2412,7 @@ def cast(command, index):
                                     messagePlayer('Your Channel Divinity caused %s wounds to %s!'%(damage, target.name), player.index)
                                     hurt(player, target, damage)
                                     
-                    if ability.lower() == 'death ward':
+                    if ability == 'death ward':
                         if not player.getLevel() >= 9:
                             return
                         if not player.mana >= 20:
@@ -2386,7 +2436,7 @@ def cast(command, index):
                                 messagePlayer('%s has been Warded from Death', player.index)
                                 messagePlayer('The next shot that would kill you instead reduces you to 1HP (Death Ward)', target.index)
                                 
-                    if ability.lower() == 'banishment':
+                    if ability == 'banishment':
                         if not player.getLevel() >= 11:
                             return
                         if not player.mana >= 50:
@@ -2406,7 +2456,7 @@ def cast(command, index):
                                 messagePlayer('You were Banished back to spawn!', target.index)
                                 target.origin = target.spawnloc
                                 
-                    if ability.lower() == 'spirit guardians':
+                    if ability == 'spirit guardians':
                         if not player.getLevel() >= 15:
                             return
                         if not player.mana >= 50:
@@ -2427,7 +2477,7 @@ def cast(command, index):
                         player.spiritguardians = True
                         messagePlayer('You are protected for the next 2 seconds by your ancestors', player.index)
                         
-                    if ability.lower() == 'true resurrection':
+                    if ability == 'true resurrection':
                     
                         def confirmRes(menu, index, choice):
                             target = players.from_userid(userid_from_index(index))
@@ -2481,7 +2531,7 @@ def cast(command, index):
                         
                 if player.getClass() == paladin.name:
                 
-                    if ability.lower() == 'shield':
+                    if ability == 'shield':
                         if not player.getLevel() >= 1:
                             return
                         if not player.mana >= 10:
@@ -2507,7 +2557,7 @@ def cast(command, index):
                                 else:
                                     messagePlayer('They already have an active Shield',player.index)
                                         
-                    if ability.lower() == 'aura of vitality':
+                    if ability == 'aura of vitality':
                         if not player.getLevel() >= 2:
                             return
                         if not player.mana >= 10:
@@ -2537,7 +2587,7 @@ def cast(command, index):
                         
                 if player.getClass() == sorcerer.name:
                 
-                    if ability.lower() == 'prestidigitation':
+                    if ability == 'prestidigitation':
                         if not player.getLevel() >= 1:
                             return
                         if not player.mana >= 10:
@@ -2548,7 +2598,7 @@ def cast(command, index):
                         player.spellCooldown = time.time()                        
                         fakeFlash(player)
                         
-                    if ability.lower() == 'mage armor':
+                    if ability == 'mage armor':
                         if not player.getLevel() >= 1:
                             return
                         if not player.mana >= 10:
@@ -2559,7 +2609,7 @@ def cast(command, index):
                         player.spellCooldown = time.time()                        
                         player.give_named_item('item_assaultsuit')
                         
-                    if ability.lower() == 'magic missile':
+                    if ability == 'magic missile':
                         if not player.getLevel() >= 2:
                             return
                         if not player.mana >= 10:
@@ -2580,7 +2630,7 @@ def cast(command, index):
                             messagePlayer('You were hit by Magic Missiles!', target.index)
                             playSound('physics/flesh/flesh_impact_bullet1.wav', player=target)
                             
-                    if ability.lower() == 'thunderwave':
+                    if ability == 'thunderwave':
                         if not player.getLevel() >= 2:
                             return
                         if not player.mana >= 10:
@@ -2612,7 +2662,7 @@ def cast(command, index):
                                     hurt(player, target, int(damage/2))
                                     messagePlayer('A Thunderwave blasts did %s damage!'%(damage), player.index)
                                         
-                    if ability.lower() == 'alter self':
+                    if ability == 'alter self':
                         if not player.getLevel() >= 3:
                             return
                         if not player.mana >= 10:
@@ -2628,7 +2678,7 @@ def cast(command, index):
                         player.change_model(model_name=model, arms_name=arms)
                         messagePlayer('You have disguised yourself!', index)
                         
-                    if ability.lower() == 'brightness':
+                    if ability == 'brightness':
                         if not player.getLevel() >= 3:
                             return
                         if not player.mana >= 20:
@@ -2641,7 +2691,7 @@ def cast(command, index):
                         for x in range(1,25):
                             player.delay(x / 10, flashPlayer, (player,))
                             
-                    if ability.lower() == 'acid splash':
+                    if ability == 'acid splash':
                         if not player.getLevel() >= 4:
                             return
                         if not player.mana >= 20:
@@ -2671,7 +2721,7 @@ def cast(command, index):
                                     messagePlayer(f'You melted {t.name}\'s armor!', player.index)
                                     messagePlayer('Your armor was melted!', t.index)
                                         
-                    if ability.lower() == 'misty step':
+                    if ability == 'misty step':
                         if not player.getLevel() >= 5:
                             return
                         if not player.mana >= 25:
@@ -2709,7 +2759,7 @@ def cast(command, index):
                             player.mana -= 25
                             player.spellCooldown = time.time()
                             
-                    if ability.lower() == 'fireball':
+                    if ability == 'fireball':
                         if not player.getLevel() >= 5:
                             return
                         if not player.mana >= 30:
@@ -2739,7 +2789,7 @@ def cast(command, index):
                                         messagePlayer('You hit %s with a Fireball!'%t.name, player.index)
                                         messagePlayer('You were hit by a fireball!',t.index)
                                             
-                    if ability.lower() == 'silence':
+                    if ability == 'silence':
                         if not player.getLevel() >= 7:
                             return
                         if not player.mana >= 35:
@@ -2757,7 +2807,7 @@ def cast(command, index):
                                     t.spellCooldown = time.time() + 5
                                     messagePlayer('You have been silenced for 5 seconds!', t.index)   
 
-                    if ability.lower() == 'confusion':
+                    if ability == 'confusion':
                         if not player.getLevel() >= 7:
                             return
                         if not player.mana >= 35:
@@ -2773,7 +2823,7 @@ def cast(command, index):
                             _player.change_model(
                                 model_name=model, arms_name=arms)
                                     
-                    if ability.lower() == 'greater invisibility':
+                    if ability == 'greater invisibility':
                         if not player.getLevel() >= 9:
                             return
                         if not player.mana >= 40:
@@ -2787,7 +2837,7 @@ def cast(command, index):
                         messagePlayer('You are now invisible!', player.index)
                         player.delay(3, resetColor, (player,))
                             
-                    if ability.lower() == 'polymorph':
+                    if ability == 'polymorph':
                         if not player.getLevel() >= 9:
                             return
                         if not player.mana >= 40:
@@ -2812,7 +2862,7 @@ def cast(command, index):
                                 target.delay(3, resetModel, (target, mdl))       
                                 messagePlayer('You have been Polymorphed into a chicken!', target.index)
                                     
-                    if ability.lower() == 'wall of fire':
+                    if ability == 'wall of fire':
                         if not player.getLevel() >= 11:
                             return
                         if not player.mana >= 50:
@@ -2823,7 +2873,7 @@ def cast(command, index):
                         player.spellCooldown = time.time()   
                         wallOfFire(player)        
 
-                    if ability.lower() == 'stoneshape':
+                    if ability == 'stoneshape':
                         if not player.getLevel() >= 11:
                             return
                         if not player.mana >= 40:
@@ -2841,7 +2891,7 @@ def cast(command, index):
                         door.call_input('SetHealth', 450)
                         door.set_property_uchar('m_takedamage', 2)
                         
-                    if ability.lower() == 'chain lightning':
+                    if ability == 'chain lightning':
                         if not player.getLevel() >= 15:
                             return
                         if not player.mana >= 80:
@@ -2876,7 +2926,7 @@ def cast(command, index):
                                     hurt(player, t, int(damage/2))
                                     messagePlayer('You were shocked!', t.index)
                                     
-                    if ability.lower() == 'true seeing':
+                    if ability == 'true seeing':
                         if not player.getLevel() >= 13:
                             return
                         if not player.mana >= 40:
@@ -2885,7 +2935,7 @@ def cast(command, index):
                         
                         trueSeeing(player, 10)
                     
-                    if ability.lower() == 'delayed blast fireball':
+                    if ability == 'delayed blast fireball':
                         if not player.getLevel() >= 17:
                             return
                         if not player.mana >= 100:
@@ -2923,7 +2973,7 @@ def cast(command, index):
                         flashbang.thrower = player.owner_handle
                         Delay(3, checkMissile, (flashbang, player))
                         
-                if ability.lower() == 'fly':
+                if ability == 'fly':
                     if not player.getLevel() >= 20:
                         return
                     if not player.mana >= 120:
@@ -2945,7 +2995,7 @@ def cast(command, index):
             
             if player.getClass() == fighter.name:
                 if not player.dead:
-                    if ability.lower() == 'disarm':
+                    if ability == 'disarm':
                         if player.disarms > 0:
                             player.disarm = not player.disarm
                             if player.disarm:
@@ -2957,9 +3007,9 @@ def cast(command, index):
                             messagePlayer('You have no more disarms', index)
                         
             if player.getClass() == cleric.name:
-                if ability.lower() in ['evil', 'good']:
+                if ability in ['evil', 'good']:
                     if player.dead:
-                        player.alignment = ability.lower()
+                        player.alignment = ability
                         messagePlayer('You are now a %s Cleric'%ability, player.index)
                         player.toggleDelay = time.time()
                     else:
@@ -2967,7 +3017,7 @@ def cast(command, index):
                         
             if player.getClass() == paladin.name:
                 if not player.dead:
-                    if ability.lower() == 'smite':
+                    if ability == 'smite':
                         player.smite = not player.smite
                         messagePlayer('Your Smite is now ' + ('on' if player.smite else 'off'), player.index)
                         
