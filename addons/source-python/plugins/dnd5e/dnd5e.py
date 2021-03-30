@@ -3,6 +3,7 @@ from messages import HudMsg
 from pprint import pprint
 from events import Event
 from events.hooks import PreEvent
+from players import PlayerGenerator
 from players.helpers import userid_from_index
 from players.helpers import index_from_userid
 from players.helpers import uniqueid_from_index
@@ -973,7 +974,65 @@ def menu_command(command, index, team_only):
 
 @SayCommand(['playerinfo', '!playerinfo', '/playerinfo'])
 def playerinfo_command(command, index, team_only):
-    showPlayerInfo(index)
+    """Command used for checking out a player's race, class, and level."""
+    # Are we looking up another player's info?
+    if len(command) > 1:
+        try:
+            index_or_userid = int(command[1])
+
+            try:
+                # Is this an index?
+                other_player = players[index_or_userid]
+            except KeyError:
+                try:
+                    # Or is it a userid?
+                    other_player = players.from_userid(index_or_userid)
+                except ValueError:
+                    other_player = None
+
+            # Did we find the player?
+            if other_player is not None:
+                showPlayerInfo(index=index, subject=other_player.index)
+                return CommandReturn.BLOCK
+
+        except ValueError:
+            # Oh well, could be a partial name.
+            pass
+
+        name_partial = command.arg_string.lower()
+
+        matches = {}
+        for edict in PlayerGenerator():
+            other_index = index_from_edict(edict)
+            name = players[other_index].name
+
+            if name_partial in name.lower():
+                matches[other_index] = name
+        
+        if matches:
+            # Do we have an exact match or only one possible player?
+            if name_partial in matches.values() or len(matches) == 1:
+                showPlayerInfo(index=index, subject=next(iter(matches)))
+            else:
+                data = []
+
+                for other_index, name in matches.items():
+                    data.append(PagedOption(text=name, value=other_index))
+
+                # Send the player a menu with a list of player names.
+                PagedMenu(
+                    data=data,
+                    select_callback=lambda menu, index, choice: showPlayerInfo(
+                        index=index, subject=choice.value
+                    ),
+                    title=f'Names containing \'{name_partial}\' '
+                ).send(index)
+        else:
+            messagePlayer(
+                f'Unable to find \x04{name_partial}\x01 on the server.', index)
+    else:
+        showPlayerInfo(index)
+
     return CommandReturn.BLOCK
 
 
