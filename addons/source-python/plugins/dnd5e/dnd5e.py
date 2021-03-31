@@ -38,6 +38,7 @@ from listeners.tick import Delay
 from listeners.tick import GameThread
 from weapons.dictionary import WeaponDictionary
 from weapons.entity import Weapon
+from weapons.manager import weapon_manager
 from engines.server import engine_server
 from engines.server import global_vars
 from effects.base import TempEntity
@@ -232,7 +233,53 @@ player_models = {
 # Create a list of all the player models (used for Confusion).
 _all_player_models = player_models[2] + player_models[3]
 
-                      
+
+# Dictionary used to determine which weapon the player is trying to buy within
+# the 'buy_internal' hook. NOTE: This can lead to false positives, seeing as
+# some weapons share the same slot. It works fine in D&D 5e because of the way
+# weapons (and weapon restrictions) are grouped together.
+weapon_buymenu_slots = {
+    # Pistol
+    **dict.fromkeys(('glock', 'hkp2000', 'usp_silencer'), 2),
+    'elite': 3,
+    'p250': 4,
+    **dict.fromkeys(('tec9', 'fiveseven', 'cz75a'), 5),
+    **dict.fromkeys(('deagle', 'revolver'), 6),
+    # SMG
+    'mac10': 8,
+    'mp9': 8,
+    **dict.fromkeys(('mp7', 'mp5sd'), 9),
+    'ump': 10,
+    'p90': 11,
+    'bizon': 12,
+    # Rifle
+    **dict.fromkeys(('galil', 'famas'), 14),
+    **dict.fromkeys(('ak47', 'm4a1', 'm4a1_silencer'), 15),
+    'ssg08': 16,
+    **dict.fromkeys(('sg556', 'aug'), 17),
+    'awp': 18,
+    **dict.fromkeys(('g3sg1', 'scar20'), 19),
+    # Heavy
+    'nova': 20,
+    'xm1014': 21,
+    **dict.fromkeys(('sawedoff', 'mag7'), 22),
+    'm249': 23,
+    'negev': 24,
+    # Grenade
+    **dict.fromkeys(('molotov', 'incgrenade'), 26),
+    'decoy': 27,
+    'flashbang': 28,
+    'hegrenade': 29,
+    'smokegrenade': 30,
+    # Equipment
+    'taser': 34
+}
+
+
+# Sound used when a player tries to buy a restricted weapon.
+CANT_BUY_SOUND = Sound('ui/weapon_cant_buy.wav')
+
+
 knife = {'knife', 'c4'}
 pistols = {'glock', 'elite', 'p250', 'tec9', 'cz75a', 'deagle', 'revolver', 'usp_silencer', 'hkp2000', 'fiveseven'}
 heavypistols = {'deagle', 'revolver'}
@@ -244,6 +291,7 @@ rifles = {'galilar', 'ak47', 'ssg08', 'sg556', 'famas', 'm4a1', 'm4a1_silencer',
 bigsnipers = {'awp', 'g3sg1', 'scar20'}
 grenades = {'molotov', 'decoy', 'flashbang', 'hegrenade', 'smokegrenade', 'incgrenade'}
 allWeapons = list(chain(knife, pistols, heavypistols, taser, shotguns, lmg, smg, rifles, bigsnipers, grenades))
+
 
 class DateTimeEncoder(json.JSONEncoder):
 
@@ -357,24 +405,25 @@ ranger.weaponDesc = ['Pistols', 'Heavy Pistols', 'Shotguns', 'SMGs', 'Scout', 'G
 
 druid = DNDClass('Druid')
 barbarian = DNDClass('Barbarian')
-        
+
+
 class Race():
-    
+
     races = []
     defaultRace = None
-    
+
     def __init__(self, name, description=None, levelAdjustment=0, defaultRace=False, weapons=[],saves=[]):
-        
         self.name = name
         self.weapons = weapons
-        self.description=description
+        self.description = description
         levelAdjustment = levelAdjustment
         self.saves = saves
         if defaultRace:
             if not Race.defaultRace:
                 Race.defaultRace = self
         Race.races.append(self)
-                
+
+
 human = Race('Human', 'Humans excel at learning and gain bonus XP', defaultRace = True)
 elf = Race('Elf', 'Elves are graceful and trained in many weapons (Can always use M4/AK/Scout)')
 elf.weapons = list(chain({'m4a1', 'm4a1_silenced', 'ak47', 'ssg08'}))
@@ -413,6 +462,12 @@ class RPGPlayer(Player):
         self.controllingbot = False
         self.queuedrace = None
         self.queuedclass = None
+        # Used to prevent the player from picking up restricted weapons.
+        self.weapon_restrictions = set()
+        # Used to prevent the player from buying restricted weapons.
+        self.buymenu_restrictions = set()
+        # Should we update weapon restrictions for this player?
+        self.new_restrictions = True
 
         if getSteamid(self.userid) in database:
             self.stats = database[getSteamid(self.userid)]
@@ -677,8 +732,54 @@ class RPGPlayer(Player):
         """Returns a list of players from the same team that are alive."""
         return list(PlayerIter(('alive', ['t', 'ct'][self.team - 2])))
 
+    @property
+    def restricted_weapons(self):
+        """Returns a set of weapons that the player can't use."""
+        class_name = self.getClass()
+        race_name = self.getRace()
+        allowed_weapons = []
         
+        for dnd_class in DNDClass.classes:
+            if class_name == dnd_class.name:
+                allowed_weapons.extend(dnd_class.weapons)
+                break
+
+        for race in Race.races:
+            if race_name == race.name:
+                allowed_weapons.extend(race.weapons)
+                break
+
+        return set(allWeapons)^set(allowed_weapons)
+
+    def update_weapon_restrictions(self):
+        """Restricts weapons according to the player's race and class."""
+        if not self.new_restrictions:
+            return
+
+        # Get rid of old restrictions.
+        self.weapon_restrictions.clear()
+        self.buymenu_restrictions.clear()
+
+        restricted_weapons = self.restricted_weapons
+        # Go through all the restricted weapons.
+        for weapon_name in restricted_weapons:
+            try:
+                # Get the buymenu slot that this weapon occupies.
+                slot = weapon_buymenu_slots[weapon_name]
+            except KeyError:
+                # Missing slot, skip this one.
+                continue
+            
+            # Add it to the set, so the player can't buy this weapon.
+            self.buymenu_restrictions.add(slot)
+
+        # Block the player from picking up these weapons.
+        self.weapon_restrictions.update(restricted_weapons)
+        self.new_restrictions = False
+
+
 players = PlayerDictionary(RPGPlayer)
+
 
 def formatLine(line, menu, index=None):
     line = line.split(' ')
@@ -708,7 +809,7 @@ def formatLine(line, menu, index=None):
 def createConfirmationMenu(obj, index):
 
     def confirmationMenuSelect(menu, index, choice):
-        player = players.from_userid(userid_from_index(index))
+        player = players[index]
         if choice.value:
             if player.dead:
                 if choice.value in Race.races:
@@ -722,10 +823,10 @@ def createConfirmationMenu(obj, index):
                     if player.meetsClassRequirements(choice.value):
                         player.queuedclass = choice.value
                     else:
-                        messagePlayer("You haven't unlocked %s"%choice.value.name, player.index)
+                        messagePlayer("You haven't unlocked %s"%choice.value.name, index)
                         return
                 msg = "You will spawn as a %s %s"%((player.queuedrace.name if player.queuedrace else player.getRace(), player.queuedclass.name if player.queuedclass else player.getClass()))
-                messagePlayer(msg, player.index)
+                messagePlayer(msg, index)
 
     confirmationMenu = PagedMenu(title="Play a %s?"%obj.name)
     confirmationMenu.append(PagedOption("Yes", obj))
@@ -821,26 +922,28 @@ def spiderSenseLoop():
                         light.create(RecipientFilter())
     Delay(3, spiderSenseLoop)
 
+
 @EntityPreHook(EntityCondition.is_player, 'bump_weapon')
 def prePickup(stack_data):
     """Called when a player bumps into/touches a dropped weapon."""
     weapon = Entity._obj(stack_data[1])
     index = index_from_pointer(stack_data[0])
     player = players[index]
-    weaponName = weapon.classname.replace('weapon_', '')
+    # Get the base weapon name. (e.g. 'weapon_awp' -> 'awp')
+    weapon_name = weapon_manager[weapon.classname].basename
 
-    if not player.canUseWeapon(weaponName):
+    if weapon_name in player.weapon_restrictions:
         bump_time = time.time()
 
         if hasattr(player, 'lastWeaponMessage'):
             if bump_time - player.lastWeaponMessage > 2:
                 player.lastWeaponMessage = bump_time
                 messagePlayer(
-                    f'{player.getClass()}s cannot use a {weaponName}', index)
+                    f'{player.getClass()}s cannot use a {weapon_name}', index)
         else:
             player.lastWeaponMessage = bump_time
             messagePlayer(
-                f'{player.getClass()}s cannot use a {weaponName}', index)
+                f'{player.getClass()}s cannot use a {weapon_name}', index)
 
         return False
 
@@ -854,7 +957,8 @@ def load():
     hudLoop()
     perceptionLoop()
     players = PlayerDictionary(RPGPlayer)        
-    
+
+
 def loadDatabase():
     global database, restfulURL
     if not os.path.exists(databaseLocation):
@@ -866,7 +970,8 @@ def loadDatabase():
     if os.path.exists(restfulFile):    
         with open(restfulFile, 'r') as f:
             restfulURL = f.readline()
-            
+
+
 def newDatabase():
     global database, players
     database = {}
@@ -1277,7 +1382,21 @@ def damagePlayer(e):
                         
 def giveItem(player, weaponName):
     player.give_named_item(weaponName)
+
+
+@EntityPreHook(EntityCondition.is_player, 'buy_internal')
+def buy_internal_pre(stack_data):
+    """Called when a player buys something from the buymenu."""
+    index = index_from_pointer(stack_data[0])
+    player = players[index]
     
+    # Is this weapon restricted for this player?
+    if stack_data[1] in player.buymenu_restrictions:
+        messagePlayer(f'You are unable to use this weapon.', index)
+        CANT_BUY_SOUND.play(index)
+        # Block the purchase.
+        return False
+
 
 @EntityPreHook(EntityCondition.is_player, 'on_take_damage')
 def preDamagePlayer(stack_data):
@@ -1732,11 +1851,13 @@ def spawnPlayer(e):
         player.setClass(player.queuedclass)
         player.queuedclass = None
         player.spell_names.clear()
+        player.new_restrictions = True
 
     if player.queuedrace:
         player.setRace(player.queuedrace)
         player.queuedrace = None
         player.spell_names.clear()
+        player.new_restrictions = True
         
     player.requestStats()
     
@@ -1747,6 +1868,7 @@ def spawnPlayer(e):
     player.maxhealth = 100            
     player.spawnloc = player.origin    
     player.spellbook = PagedMenu(title=f'[D&D] {player_class} Spells')
+    player.update_weapon_restrictions()
     
     if player_level <= 2:
         if hasattr(player, 'sentmenu'):
@@ -3035,15 +3157,17 @@ def playSound(sound, point=None, player=None, duration=False):
     if not point and not player:
         for p in PlayerIter():
             p.play_sound(sound, sound_time=duration)
-            
+
     if point:
         for p in PlayerIter():
-            if Vector.get_distance(p.origin, point) <= 950:
+            if point.get_distance(p.origin) <= 950:
                 p.play_sound(sound, sound_time=duration)
-                
+
     if not point and player:
+        origin = player.origin
+
         for p in PlayerIter():
-            if Vector.get_distance(p.origin, player.origin) <= 950:
+            if origin.get_distance(p.origin) <= 950:
                 p.play_sound(sound, sound_time=duration)
     
 def trueSeeing(player, duration=10):
