@@ -2234,7 +2234,7 @@ def bugReport(command,index):
 def spellbook_cast(menu, index, choice):
     """Called when a player tries to cast a spell through their spellbook."""
     player = players[index]
-    spell_name = choice.text
+    spell_name = choice.text.lower()
 
     # Is the player trying to cast Cure or Inflict?
     if spell_name in ('cure', 'inflict'):
