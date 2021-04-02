@@ -730,7 +730,17 @@ class RPGPlayer(Player):
 
     def get_teammates(self):
         """Returns a list of players from the same team that are alive."""
-        return list(PlayerIter(('alive', ['t', 'ct'][self.team - 2])))
+        index = self.index
+        teammates = []
+
+        for player in PlayerIter(('alive', ['t', 'ct'][self.team - 2])):
+            # Don't add the player looking for teammates as a teammate.
+            if player.index == index:
+                continue
+
+            teammates.append(player)
+
+        return teammates
 
     @property
     def restricted_weapons(self):
