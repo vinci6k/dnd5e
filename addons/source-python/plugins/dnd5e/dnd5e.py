@@ -1812,31 +1812,32 @@ def on_player_run_command(player, user_cmd):
         return
 
     if player.getClass() == rogue.name and player.getLevel() >= 3:
-        time = time.time()
+        current_time = time.time()
 
         if user_cmd.buttons & PlayerButtons.SPEED:
             if player.endurance > 0:
                 if player.stealthed():
                     player.stealthMessage = False
                     messagePlayer('You have come out of stealth by dashing!', player.index)
-                player.endurance -= (time - player.lastTimeTick)
+                player.endurance -= (current_time - player.lastTimeTick)
                 player.speed = 2.5
-                player.dashCooldown = time
-                player.stealth = time
+                player.dashCooldown = current_time
+                player.stealth = current_time
                 player.dashMessage = False
             else:
                 player.speed = 1
         else:
             player.speed = 1
-            if time - player.dashCooldown > 6:
+            if current_time - player.dashCooldown > 6:
                 if player.endurance < 3:
-                    player.endurance += min(3, time - player.lastTimeTick)   
+                    player.endurance += min(
+                        3, current_time - player.lastTimeTick)   
                 else:
                     if not player.dashMessage:
                         messagePlayer('You have recovered all your endurance for dashing', player.index)
                         player.dashMessage = True
 
-        player.lastTimeTick = time
+        player.lastTimeTick = current_time
             
 @Event('bot_takeover')
 def bot_takeover(e):
@@ -2013,9 +2014,9 @@ def spawnPlayer(e):
             messagePlayer(spell, index)
             
     if player_class == rogue.name:
-        time = time.time()
+        spawn_time = time.time()
 
-        player.stealth = time - 7
+        player.stealth = spawn_time - 7
         player.stealthMessage = False
         player.stealthChecks = {}
         messagePlayer('You are stealthed. After shooting, jumping, using an ability, or being shot, you restealth after {:.2f} seconds'.format(6.225 - player_level*(4.5/20) - (1 if player_race == halfling.name else 0)), index)
@@ -2023,8 +2024,8 @@ def spawnPlayer(e):
         
         if player_level >= 3:
             player.endurance = 3 + (player_level - 3) * (3/17)
-            player.dashCooldown = time - 4
-            player.lastTimeTick = time
+            player.dashCooldown = spawn_time - 4
+            player.lastTimeTick = spawn_time
             player.dashMessage = False            
             messagePlayer('You can now dash! Hold your walk key to run! (3s)', index)
             messagePlayer('You can now steal money and guns from your opponent! Get close and attack!', index)
