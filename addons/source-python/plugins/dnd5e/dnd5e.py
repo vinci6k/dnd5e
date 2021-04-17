@@ -4,10 +4,11 @@ from pprint import pprint
 from events import Event
 from events.hooks import PreEvent
 from players import PlayerGenerator
-from players.helpers import userid_from_index
+from players.helpers import index_from_steamid
 from players.helpers import index_from_userid
 from players.helpers import uniqueid_from_index
 from players.helpers import userid_from_edict
+from players.helpers import userid_from_index
 from players.constants import PlayerButtons
 from players.entity import Player
 from players.dictionary import PlayerDictionary
@@ -30,10 +31,14 @@ from mathlib import QAngle
 from filters.entities import EntityIter
 from filters.players import PlayerIter
 from filters.recipients import RecipientFilter
+from filters.weapons import WeaponClassIter
 from memory import make_object
 from memory.hooks import PreHook
 from os.path import join, dirname, abspath
 from listeners import OnPlayerRunCommand
+from listeners import OnLevelInit
+from listeners import OnLevelEnd
+from listeners import OnClientFullyConnect
 from listeners.tick import Delay
 from listeners.tick import GameThread
 from weapons.dictionary import WeaponDictionary
@@ -43,11 +48,14 @@ from engines.server import engine_server
 from engines.server import global_vars
 from effects.base import TempEntity
 from colors import Color
+from paths import TRANSLATION_PATH
 from plugins.manager import plugin_manager
 from menus import SimpleMenu
+from menus import SimpleOption
 from menus import Text
 from menus import PagedMenu
 from menus import PagedOption
+from menus.base import _translate_text
 from commands.say import SayFilter
 from commands.say import SayCommand
 from commands.client import ClientCommand
@@ -60,8 +68,10 @@ from engines.trace import ContentMasks
 from engines.trace import GameTrace
 from engines.trace import Ray
 from engines.trace import TraceFilterSimple
+from translations.strings import LangStrings
 from stringtables import string_tables
 from memory import NULL
+from enum import IntEnum
 import math
 import random
 import os
@@ -82,6 +92,14 @@ try:
 except ImportError:
     # Nope.
     FloatingNumber = None
+
+# D&D 5e
+from .core.menus import BLANK_SPACE
+from .core.menus import TextEx
+
+
+CHALLENGE_STRINGS = LangStrings(
+    TRANSLATION_PATH / 'dnd5e' / 'challenge_strings')
 
 
 database = {}
@@ -246,8 +264,7 @@ weapon_buymenu_slots = {
     **dict.fromkeys(('tec9', 'fiveseven', 'cz75a'), 5),
     **dict.fromkeys(('deagle', 'revolver'), 6),
     # SMG
-    'mac10': 8,
-    'mp9': 8,
+    **dict.fromkeys(('mac10', 'mp9'), 8),
     **dict.fromkeys(('mp7', 'mp5sd'), 9),
     'ump': 10,
     'p90': 11,
@@ -278,6 +295,13 @@ weapon_buymenu_slots = {
 
 # Sound used when a player tries to buy a restricted weapon.
 CANT_BUY_SOUND = Sound('ui/weapon_cant_buy.wav')
+# Sound used when a player casts a spell through their spell book menu.
+CAST_SPELL_SOUND = Sound(
+    'ui/panorama/submenu_select_01.wav', volume=0.7, pitch=85)
+# Sound used when a player completes a challenge.
+CHALLENGE_SOUND = Sound('ui/coin_pickup_01.wav', pitch=80)
+# Sound used when a player rerolls a challenge.
+REROLL_SOUND = Sound('ui/armsrace_level_up.wav', volume=1, pitch=80)
 
 
 knife = {'knife', 'c4'}
@@ -367,7 +391,7 @@ class DNDClass():
             if not DNDClass.defaultClass:
                 DNDClass.defaultClass = self
 
-cleric = DNDClass('Cleric', 'A priest who follows a path of good or evil. Uses divine power to fight.', saves=['Wisdom'])       
+cleric = DNDClass('Cleric', 'A priest who follows a path of good or evil. Uses divine power to fight.', saves=['Wisdom'])
 cleric.weapons = list(chain(knife, pistols, heavypistols, taser, shotguns, lmg, smg))
 cleric.weaponDesc = ['Pistols', 'Heavy Pistols', 'Taser', 'Shotguns', 'LMGs', 'SMGs']
 
@@ -441,10 +465,12 @@ halfelf = Race('Half-Elf', 'Half-Elves make charming diplomats (5% Bonus XP and 
 halforc = Race('Half-Orc', "Half-Orcs aren't nearly as brutish as full-bloods, but nearly as strong (15% Damage)")
 tiefling = Race('Tiefling', 'Tieflings blood have been tainted with infernal ancestry. Immune to flashes. (!cast Darkness - Blinds everyone near you)')
 
+
 def error(message):
     print("\n\n------------------")
     print(message)
     print("------------------\n\n")        
+
 
 class RPGPlayer(Player):
 
@@ -454,12 +480,15 @@ class RPGPlayer(Player):
         self.hits = 0    
         self.stats = {}
         self.spellCooldown = 0
+        self.dashCooldown = 0
+        self.endurance = 0
+        self.stealthMessage = False
+        self.stealth = 0
         self.toggleDelay = 0
         self.crit = False
         self.saves = []
-        self.spell_names = []
         self.spellbook = None
-        self.controllingbot = False
+        self.controlling_bot = False
         self.queuedrace = None
         self.queuedclass = None
         # Used to prevent the player from picking up restricted weapons.
@@ -468,6 +497,7 @@ class RPGPlayer(Player):
         self.buymenu_restrictions = set()
         # Should we update weapon restrictions for this player?
         self.new_restrictions = True
+        self._cast_menu = None
 
         if getSteamid(self.userid) in database:
             self.stats = database[getSteamid(self.userid)]
@@ -477,7 +507,7 @@ class RPGPlayer(Player):
             self.stats['Gold'] = 0
             database[getSteamid(self.userid)] = self.stats
 
-        self.setDefaults()    
+        self.setDefaults()
         
     def setDefaults(self):
         for cls in DNDClass.classes:
@@ -497,17 +527,21 @@ class RPGPlayer(Player):
                 messagePlayer('XP is set to only be earned when a match starts', self.index)
                 return
                 
-        if self.controllingbot:
+        if self.controlling_bot:
             if reason != 'winning the round!':
-                messagePlayer('XP can not be earned while controlling a bot', self.index)
+                messagePlayer(
+                    'XP can not be earned while controlling a bot', self.index)
                 return
         
         self.stats[self.getClass()]['XP'] += xp
-        message = "\x06You have earned %s XP"%xp
+        color = '\x10' if reason == 'completing a challenge' else '\x06'
+        message = f'{color}You have earned {xp} XP'
+
         if reason:
-            message += " for %s!"%reason
+            message += f' for {reason}!'
         else:
-            message += "!"            
+            message += '!'
+
         messagePlayer(message, self.index)
         
         if self.getRace() == human.name:
@@ -714,6 +748,36 @@ class RPGPlayer(Player):
         level = self.getLevel()
         return int(level / 2) * 15 + (5 + 10 if level % 2 else 0)
 
+    @property
+    def cast_menu(self):
+        """Returns the player's PagedMenu used for quick spell casting."""
+        if self._cast_menu is None:
+            self._cast_menu = PagedMenu(
+                select_callback=spellbook_cast,
+                title='[D&D] Spellbook'
+            )
+
+        return self._cast_menu
+
+    def add_to_cast_menu(self, spell_option):
+        """Adds the given PagedOption to the player's cast menu."""
+        menu = self.cast_menu
+
+        # Is this spell already in the menu?
+        if spell_option in menu:
+            return
+
+        menu.append(spell_option)
+
+    def queue_spellbook_update(self):
+        """Closes the '!cast' menu and removes all spell names."""
+        try:
+            self._cast_menu.close()
+        except AttributeError:
+            pass
+
+        self._cast_menu = None
+
     def change_model(self, model_name, arms_name):
         """Changes the player's world and arms model."""
         self.model = Model(f'models/player/custom_player/legacy/{model_name}')
@@ -759,7 +823,7 @@ class RPGPlayer(Player):
                 allowed_weapons.extend(race.weapons)
                 break
 
-        return set(allWeapons)^set(allowed_weapons)
+        return set(allWeapons) ^ set(allowed_weapons)
 
     def update_weapon_restrictions(self):
         """Restricts weapons according to the player's race and class."""
@@ -796,11 +860,23 @@ def formatLine(line, menu, index=None):
     
     if index is not None:
         player = players[index]
-        spell_name = ' '.join(line[1:line.index('-')])
 
-        if spell_name not in player.spell_names:
-            # Add the name of the spell to the list.
-            player.spell_names.append(spell_name)
+        try:
+            # Get the name of the spell/ability.
+            # (e.g. '!cast Breath Weapon - Breath Fire..' -> 'Breath Weapon')
+            spell_names = (
+                ' '.join(line[1:line.index('-')]).replace(' {weapon}', ''),)
+        except ValueError:
+            # Unable to find '-' in the list, must be Inflict and Cure.
+            spell_names = ('Inflict', 'Cure')
+
+        for name in spell_names:
+            try:
+                option = abilities_menu_options[name]
+            except KeyError:
+                continue
+
+            player.add_to_cast_menu(option)
 
     desc = ''
     i = 0
@@ -1031,57 +1107,109 @@ def saveDatabase():
 def unload():
     saveDatabase()
     messageServer("has been unloaded")
-    
+
+
 def debug(message):
     if debugValue:
         print(message)      
-        
+
+
 def getSteamid(userid):
     index = index_from_userid(userid)
     return uniqueid_from_index(index)
-            
-@Event("player_activate")
+
+
+@OnLevelInit
+def on_level_init(map_name):
+    """Called when a new map loads."""
+    challenge_manager.on_map_changed()
+
+
+@OnClientFullyConnect
+def on_client_fully_connect(index):
+    """Called when the client has fully connected to the server."""
+    challenge_manager.generate_challenges(players[index])
+
+
+@Event('player_activate')
 def playerActivate(e):
-    steamid = getSteamid(e['userid'])
-    if steamid in database:
-        players.from_userid(e['userid']).stats = database[getSteamid(e['userid'])]
-        
+    player = players.from_userid(e['userid'])
+
+    try:
+        stats = database[player.steamid]
+    except KeyError:
+        return
+
+    player.stats = stats
+
+
 @Event('bomb_defused')
 def defusedBomb(e):
     player = players.from_userid(e['userid'])
     player.giveXP(defuseBombXP, 'defusing the bomb!')
-    
+
+    challenge_manager.update_challenge(
+        player=player,
+        challenge_type=ChallengeTypes.BOMB_DEFUSE
+    )
+
+
 @Event('bomb_exploded')
 def defusedBomb(e):
     player = players.from_userid(e['userid'])
     player.giveXP(explodedBombXP, 'protecting the bomb!')
-        
+
+
 @Event('bomb_planted')
 def defusedBomb(e):
     player = players.from_userid(e['userid'])
     player.giveXP(plantBombXP, 'planting the bomb!')
-        
+
+    challenge_manager.update_challenge(
+        player=player,
+        challenge_type=ChallengeTypes.BOMB_PLANT
+    )
+
+
 @Event('round_end')
 def endedRound(e):
+    """Called when the round ends."""
+    winner = e['winner']
+
     for player in PlayerIter():
-        if e['winner'] == player.team_index:
-            players.from_userid(player.userid).giveXP(roundWinXP, "winning the round!")
+        player = players[player.index]
+
+        if winner == player.team_index:
+            player.giveXP(roundWinXP, 'winning the round!')
+
         if restfulURL:
-            Delay(2.45, messagePlayer, ('Saving your stats online', player.index))
-            Delay(2.5, players.from_userid(player.userid).postStats)
+            player.delay(2.45, messagePlayer, (
+                'Saving your stats online', player.index))
+            player.delay(2.5, player.postStats)
+
+        # Did this player survive the round?
+        if not player.dead and not player.controlling_bot:
+            challenge_manager.update_challenge(
+                player=player,
+                challenge_type=ChallengeTypes.SURVIVE
+            )
+
     saveDatabase()
-    
+
+
 MATCH_STARTED = False
 @Event('round_announce_match_start')
 def newMatch(e):
     global MATCH_STARTED
     MATCH_STARTED = True
 
+
 @Event('round_announce_warmup')
 def warmup(e):
     global MATCH_STARTED
     MATCH_STARTED = False
-    
+
+
 @SayFilter
 def filterChat(command, index, team_only):
     cmd_string = command.command_string
@@ -1299,7 +1427,7 @@ def damagePlayer(e):
     userid_a = e['attacker']
     userid_v = e['userid']
     
-    # Killed by world or self?
+    # Hurt by world or self?
     if userid_a in (0, userid_v):
         return
 
@@ -1313,7 +1441,7 @@ def damagePlayer(e):
         victim.stealth = time.time()
         victim.stealthMessage = False
     
-    # Killed by a teammate?
+    # Hurt by a teammate?
     if victim.team_index == attacker.team_index:
         return
     
@@ -1389,7 +1517,8 @@ def damagePlayer(e):
                         
                         messagePlayer('You robbed someone!', attacker.index)
                         messagePlayer('You were robbed by a theif!', victim.index)
-                        
+
+
 def giveItem(player, weaponName):
     player.give_named_item(weaponName)
 
@@ -1399,7 +1528,7 @@ def buy_internal_pre(stack_data):
     """Called when a player buys something from the buymenu."""
     index = index_from_pointer(stack_data[0])
     player = players[index]
-    
+
     # Is this weapon restricted for this player?
     if stack_data[1] in player.buymenu_restrictions:
         messagePlayer(f'You are unable to use this weapon.', index)
@@ -1546,6 +1675,12 @@ def formatDamage(attacker, victim, damage, weapon=None):
                 messagePlayer('You dealt %s damage with a sneak attack!'%sneakAttack, attacker.index)            
                 attacker.stealth = time.time()
                 attacker.stealthMessage = False
+
+                challenge_manager.update_challenge(
+                    player=attacker,
+                    challenge_type=ChallengeTypes.SNEAK,
+                    amount=int(damage)
+                )
                  
         damage *= bonusDamageMult 
          
@@ -1602,22 +1737,30 @@ def killedPlayer(e):
     userid_a = e['attacker']
     userid_v = e['userid']
 
+    victim = players.from_userid(userid_v)
+    victim.resetBuffs()
+    victim.deathspot = victim.origin
+    challenge_manager.on_player_death(victim)
+
+    try:
+        # Try to close the '!cast' menu.
+        victim.cast_menu.close()
+    except AttributeError:
+        # No menu to be found, move along.
+        pass
+
     # Killed by world or self?
     if userid_a in (0, userid_v):
         return
 
-    attacker = players.from_userid(userid_a)
-    victim = players.from_userid(userid_v)
-
-    victim.resetBuffs()
-    victim.deathspot = victim.origin
+    attacker = players.from_userid(userid_a)    
     
     # Killed by a teammate?
     if victim.team_index == attacker.team_index:
         return
         
     if attacker.index:
-        if not attacker.controllingbot:
+        if not attacker.controlling_bot:
             attacker.killspree = (1 if not hasattr(attacker, 'killspree') else attacker.killspree + 1)
             if attacker.killspree >= 3:
                 messageServer("%s is on a killspree! Kill them for more XP!"%attacker.name)
@@ -1632,15 +1775,18 @@ def killedPlayer(e):
     # Get the level of the attacker and victim.
     level_attacker = attacker.getLevel()
     level_victim = victim.getLevel()
+    
+    weapon = e['weapon']
+    headshot = e['headshot']
 
-    if not attacker.controllingbot:
+    if not attacker.controlling_bot:
         if level_victim > level_attacker:
             attacker.giveXP((level_victim - level_attacker) * higherLevelXP, "killing someone higher level than you!")
 
-    if 'knife' in e['weapon']:
+    if 'knife' in weapon:
         attacker.giveXP(knifeXP, 'a knife kill!')
     else:
-        if e['headshot']:
+        if headshot:
             attacker.giveXP(headshotXP, 'a headshot!')
         else:
             if(int(e['assister'])):
@@ -1653,13 +1799,21 @@ def killedPlayer(e):
     levelDiff = level_attacker - level_victim
     if levelDiff >= 10:
         penalty = -killXP * (levelDiff/20)
-        attacker.giveXP(int(penalty), 'For killing someone so much lower level...')
+        attacker.giveXP(int(penalty), 'killing someone so much lower level...')
 
     if attacker.getClass() == fighter.name:
         if level_attacker == 20:
             health = attacker.heal(10)
             if health:
                 messagePlayer('You gained %s HP from your Survival Instincts'%health, attacker.index)
+
+    challenge_manager.update_challenge(
+        player=attacker,
+        challenge_type=ChallengeTypes.KILL,
+        victim_race=victim.getRace(),
+        weapon=weapon,
+        headshot=headshot
+    )
     
 @PreEvent('weapon_fire')
 def weapon_fire_pre(event):
@@ -1720,28 +1874,35 @@ def weapon_fire_post(player):
     player.set_datamap_property_float('m_flNextAttack', cur_time)
     
 def dndLoop():
-    try:
-        for p in PlayerIter():
-            player = players.from_userid(p.userid)
-            checkStealth(player)                
-    except:
-        pass
+    for edict in PlayerGenerator():
+        try:
+            player = players[index_from_edict(edict)]
+        except KeyError:
+            continue
+
+        checkStealth(player)
     
     Delay(.05, dndLoop)
-    
-def perceptionLoop():    
-    for v in PlayerIter():    
-        for p in PlayerIter():        
-            if v.get_team() != p.get_team() and not (v.dead or p.dead):
-                player = players.from_userid(p.userid)
-                viewer = players.from_userid(v.userid)
-                if not player.is_bot():
-                    if checkStealth(player):                        
-                        if Vector.get_distance(player.origin,viewer.origin) < 1500:                        
-                            perceptionCheck(viewer, player) 
+
+
+def perceptionLoop():
+    for viewer in PlayerIter('alive'):
+        viewer = players[viewer.index]
+        origin = viewer.origin
+
+        for target in viewer.get_valid_targets():
+            if target.is_bot():
+                continue
+
+            target = players[target.index]
+
+            if checkStealth(target):
+                if origin.get_distance(target.origin) < 1500:
+                    perceptionCheck(viewer, target)
         
     Delay(3, perceptionLoop)
-    
+
+
 def hudMessage(player):
     msg = ''
     if hasattr(player, 'mana'):
@@ -1764,10 +1925,11 @@ def hudMessage(player):
         fx_time=.10,
         channel=2
     ).send(player.index)
+
     
 def hudLoop():
     for player in PlayerIter():
-        player = players.from_userid(player.userid)
+        player = players[player.index]
         hudMessage(player)
         
     Delay(1.3, hudLoop)
@@ -1830,27 +1992,29 @@ def on_player_run_command(player, user_cmd):
             player.speed = 1
             if current_time - player.dashCooldown > 6:
                 if player.endurance < 3:
-                    player.endurance += min(
-                        3, current_time - player.lastTimeTick)   
+                    player.endurance += min(3, current_time - player.lastTimeTick)   
                 else:
                     if not player.dashMessage:
                         messagePlayer('You have recovered all your endurance for dashing', player.index)
                         player.dashMessage = True
 
         player.lastTimeTick = current_time
-            
+
+
 @Event('bot_takeover')
 def bot_takeover(e):
     player = players.from_userid(e['userid'])
-    player.controllingbot = True
-            
+    player.controlling_bot = True
+
+
 @Event('round_start')
 def startedRound(e):
     for player in PlayerIter():
         player.sentmenu = False
         if not player.is_bot():
-            players[player.index].controllingbot = False
-        
+            players[player.index].controlling_bot = False
+
+
 @Event('player_spawn')
 def spawnPlayer(e):
     """Called when a player spawns."""
@@ -1861,13 +2025,13 @@ def spawnPlayer(e):
     if player.queuedclass:
         player.setClass(player.queuedclass)
         player.queuedclass = None
-        player.spell_names.clear()
+        player.queue_spellbook_update()
         player.new_restrictions = True
 
     if player.queuedrace:
         player.setRace(player.queuedrace)
         player.queuedrace = None
-        player.spell_names.clear()
+        player.queue_spellbook_update()
         player.new_restrictions = True
         
     player.requestStats()
@@ -1880,7 +2044,7 @@ def spawnPlayer(e):
     player.spawnloc = player.origin    
     player.spellbook = PagedMenu(title=f'[D&D] {player_class} Spells')
     player.update_weapon_restrictions()
-    
+
     if player_level <= 2:
         if hasattr(player, 'sentmenu'):
             if not player.sentmenu:
@@ -1959,14 +2123,14 @@ def spawnPlayer(e):
 
         spell = '!cast {Evil/Good} - You can change your alignment'
         messagePlayer(spell, index)
-        formatLine(spell, player.spellbook, index)
+        formatLine(spell, player.spellbook)
         
         spell = '!cast Inflict {amount} / !cast Cure {amount}'
         formatLine(spell, player.spellbook, index)
         messagePlayer(spell, index)
 
         spell = 'Inflict to deal damage, Cure to heal. Spend up to %s mana (1HP/mana)'%(min(player.mana, player_level*2+10))
-        formatLine(spell, player.spellbook, index)
+        formatLine(spell, player.spellbook)
         messagePlayer(spell, index)
         
         if player_level >= 3:
@@ -2009,14 +2173,14 @@ def spawnPlayer(e):
             messagePlayer(spell, index)
         
         if player_level >= 20:
-            spell = '!cast True Ressurection - 100 Mana - Bring back an ally from the dead'
+            spell = '!cast True Resurrection - 100 Mana - Bring back an ally from the dead'
             formatLine(spell, player.spellbook, index)
             messagePlayer(spell, index)
             
     if player_class == rogue.name:
-        spawn_time = time.time()
+        current_time = time.time()
 
-        player.stealth = spawn_time - 7
+        player.stealth = current_time - 7
         player.stealthMessage = False
         player.stealthChecks = {}
         messagePlayer('You are stealthed. After shooting, jumping, using an ability, or being shot, you restealth after {:.2f} seconds'.format(6.225 - player_level*(4.5/20) - (1 if player_race == halfling.name else 0)), index)
@@ -2024,8 +2188,8 @@ def spawnPlayer(e):
         
         if player_level >= 3:
             player.endurance = 3 + (player_level - 3) * (3/17)
-            player.dashCooldown = spawn_time - 4
-            player.lastTimeTick = spawn_time
+            player.dashCooldown = current_time - 4
+            player.lastTimeTick = current_time
             player.dashMessage = False            
             messagePlayer('You can now dash! Hold your walk key to run! (3s)', index)
             messagePlayer('You can now steal money and guns from your opponent! Get close and attack!', index)
@@ -2165,7 +2329,7 @@ abilities = {
     'curse',
     'channel divinity',
     'death ward',
-    'anishment',
+    'banishment',
     'spirit guardians',
     'true resurrection',
     'prestidigitation',
@@ -2193,12 +2357,28 @@ abilities = {
     'aura of vitality'
 }
 
+
+# Dictionary used to hold PagedOptions for the cast menu.
+abilities_menu_options = {}
+
+
+# Create a PagedOption for each ability/spell.
+for ability in abilities:
+    # Format the name.
+    # (e.g. 'aura of vitality' -> 'Aura of Vitality')
+    pretty_name = ' '.join(
+        [w if w == 'of' else w.capitalize() for w in ability.split()])
+
+    abilities_menu_options[pretty_name] = PagedOption(text=pretty_name)
+
+
 toggles = {
     'evil',
     'good',
     'disarm',
     'smite'
 }
+
 
 @ClientCommand('!forcedatabasepush')
 def forceDatabasePush(command, index):
@@ -2242,10 +2422,73 @@ def bugReport(command,index):
     messagePlayer('Thank you for submitting a bug. Please remind Aurora about your submission.', player.index)
 
 
+# =============================================================================
+# >> SPIRITUAL WEAPON MENU
+# =============================================================================
+sw_submenus = {}
+
+
+def spiritual_weapon_cast(menu, index, choice):
+    """Used to cast 'Spiritual Weapon' through a menu."""
+    player = players[index]
+    player.client_command(
+        command=f'!cast spiritual weapon {choice.text}', server_side=True)
+
+    CAST_SPELL_SOUND.play(index)
+    # Resend the '!cast' menu.
+    player.cast_menu.send(index)
+
+
+# Create submenus (categories) for the Spiritual Weapon casting menu.
+for category in ('pistol', 'heavy', 'smg', 'rifle', 'grenade', 'other'):
+    if category == 'heavy':
+        weapon_names = []
+
+        # Combine shotguns and machineguns (LMGs) into a single category.
+        for _type in ('shotgun', 'machinegun'):
+            weapon_names.extend(
+                [weapon.basename for weapon in WeaponClassIter(_type)])
+
+    elif category == 'other':
+        weapon_names = ['knife', 'taser', 'c4']
+
+    else:
+        weapon_names = [
+            weapon.basename for weapon in WeaponClassIter(category)]
+
+    # Remove any weapons that aren't being used in D&D 5e.
+    weapon_names = set(weapon_names) & set(allWeapons)
+    options = [PagedOption(name) for name in weapon_names]
+
+    sw_submenus[category] = PagedMenu(
+        data=options,
+        select_callback=spiritual_weapon_cast,
+        close_callback=lambda menu, index: spiritual_weapon_menu.send(
+            index),
+        title=f'[D&D] {category.capitalize()}'
+    )
+
+
+# Menu used for casting Spiritual Weapon quickly.
+spiritual_weapon_menu = PagedMenu(
+    data=[PagedOption(
+        text=_type.capitalize(), value=_type) for _type in sw_submenus.keys()],
+    select_callback=lambda menu, index, choice: sw_submenus[choice.value].send(
+        index),
+    # Resend the '!cast' menu if the player closes this one.
+    close_callback=lambda menu, index: players[index].cast_menu.send(index),
+    title='[D&D] Spiritual Weapon'
+    )
+
+
 def spellbook_cast(menu, index, choice):
     """Called when a player tries to cast a spell through their spellbook."""
     player = players[index]
     spell_name = choice.text.lower()
+
+    if spell_name == 'spiritual weapon':
+        spiritual_weapon_menu.send(index)
+        return
 
     # Is the player trying to cast Cure or Inflict?
     if spell_name in ('cure', 'inflict'):
@@ -2254,7 +2497,8 @@ def spellbook_cast(menu, index, choice):
 
     # Cast the spell.
     player.client_command(command=f'!cast {spell_name}', server_side=True)
-    # Re-send the menu.
+    CAST_SPELL_SOUND.play(index)
+    # Resend the menu.
     menu.send(index)
 
 
@@ -2265,15 +2509,18 @@ def cast(command, index):
     
     # Did the player just type '!cast'?
     if len(command) < 2:
-        # Missing spells?
-        if not player.spell_names:
+        cast_menu = player.cast_menu
+        
+        # Is the player missing spells?
+        if len(cast_menu) == 0:
+            # Don't go further.
             return
 
-        PagedMenu(
-            data=[PagedOption(text=name) for name in player.spell_names],
-            select_callback=spellbook_cast,
-            title='[D&D] Spellbook'
-        ).send(index)
+        # Is the cast menu already open for this player?
+        if cast_menu.is_active_menu(index):
+            cast_menu.close(index)
+        else:
+            cast_menu.send(index)
 
         return
     else:
@@ -2306,7 +2553,8 @@ def cast(command, index):
     if ability in abilities:
         if not player.dead:      
             if time.time() - player.spellCooldown > 1.5:
-            
+                mana_before = player.mana
+
                 if player.getRace() == dragonborn.name:
                     if ability == 'breath weapon':
                         if player.breathweapon:
@@ -2435,7 +2683,14 @@ def cast(command, index):
                                         messagePlayer('You healed %s for %s health!'%(target.name, healing), player.index)
                                         messagePlayer('You were healed for %s health!'%hp, target.index)
                                         player.mana -= amount
-                                        player.spellCooldown=time.time()      
+                                        player.spellCooldown=time.time()
+
+                                        challenge_manager.update_challenge(
+                                            player=player,
+                                            challenge_type='heal',
+                                            amount=hp
+                                        )
+
                                     else:
                                         messagePlayer('They\'re full hp!', player.index)
                             
@@ -2479,7 +2734,7 @@ def cast(command, index):
                                 continue
                             
                             teammate.bless = True
-                            messagePlayer('You have been Blessed by a Cleric. Increases your chance to make saves!', target.index)
+                            messagePlayer('You have been Blessed by a Cleric. Increases your chance to make saves!', teammate.index)
                             
                     if ability == 'spiritual weapon':
                         if not player.getLevel() >= 5:
@@ -2487,15 +2742,16 @@ def cast(command, index):
                         if not player.mana >= 30:
                             messagePlayer('You do not have enough mana for this spell (Have %s/Need %s)'%(player.mana, 30), player.index)
                             return
+
                         if amount.startswith('weapon_'):
                             amount = amount.replace('weapon_','')
                         if amount in allWeapons:
-                            player.give_named_item('weapon_' + amount)
+                            player.give_named_item(f'weapon_{amount}')
                             player.mana -= 30
                             player.spellCooldown = time.time()       
                             messagePlayer('You have summoned a Spiritual Weapon', player.index)
                         else:
-                            messagePlayer('%s isn\'t a valid weapon name', player.index)
+                            messagePlayer(f'{amount} isn\'t a valid weapon name', player.index)
                             
                     if ability == 'curse':
                         if not player.getLevel() >= 5:
@@ -2505,8 +2761,11 @@ def cast(command, index):
                             return
                         target = player.get_view_player()
                         if not target:
+                            messagePlayer(
+                                'You need a target for this spell.', index)
                             return
-                        target = players.from_userid(target.userid)
+
+                        target = players[target.index]
                         if target.team != player.team and not target.dead:
                             player.mana -= 30
                             player.spellCooldown = time.time()       
@@ -2523,27 +2782,45 @@ def cast(command, index):
                         if not player.channels > 0:
                             messagePlayer('You have no more uses of Channel Divinity', player.index)                            
                             return
-                        
-                        playSound('items/medcharge4.wav', player=player, duration=.75)                        
+
+                        # BUG: Sound plays forever.
+                        # playSound('items/medcharge4.wav', player=player, duration=.75)
+
                         player.channels -= 1
                         player.spellCooldown = time.time()
-                        if player.alignment.lower() == 'good':
-                            for p in PlayerIter():
-                                if not p.dead and p.team == player.team and Vector.get_distance(player.origin, p.origin) < 500:
-                                    target = players.from_userid(p.userid)
-                                    hp = target.heal(dice(5,8))
-                                    if hp:
-                                        messagePlayer('Your Channel Divinity healed %s for %s HP!'%(target.name, hp), player.index)
-                                        messagePlayer('You were healed by %s\'s Divine Power'%player.name, target.index)
-                                        
-                        if player.alignment.lower() == 'evil':
-                            for p in PlayerIter():
-                                if not p.dead and p.team == player.team and Vector.get_distance(player.origin, p.origin) < 500:
-                                    target = players.from_userid(p.userid)
-                                    damage = dice(5,8)
-                                    messagePlayer('You were assaulted by %s\'s Divine Power'%player.name, target.index)
-                                    messagePlayer('Your Channel Divinity caused %s wounds to %s!'%(damage, target.name), player.index)
-                                    hurt(player, target, damage)
+
+                        alignment = player.alignment.lower()
+                        origin = player.origin
+                        name = player.name
+
+                        if alignment == 'good':
+                            for teammate in player.get_teammates():
+                                if origin.get_distance(teammate.origin) > 500:
+                                    continue
+
+                                teammate = players[teammate.index]
+                                hp = teammate.heal(dice(5, 8))
+
+                                if hp:
+                                    messagePlayer(f'Your Channel Divinity healed {teammate.name} for {hp} HP!', index)
+                                    messagePlayer(f'You were healed by {name}\'s Divine Power.', teammate.index)
+
+                                    challenge_manager.update_challenge(
+                                        player=player,
+                                        challenge_type='heal',
+                                        amount=hp
+                                    )
+                        
+                        elif alignment == 'evil':
+                            for target in player.get_valid_targets():
+                                if origin.get_distance(target.origin) > 500:
+                                    continue
+
+                                target = players[target.index]
+                                damage = dice(5, 8)
+                                messagePlayer(f'You were assaulted by {name}\'s Divine Power.', target.index)
+                                messagePlayer(f'Your Channel Divinity caused {damage} wounds to {target.name}!', index)
+                                hurt(player, target, damage)
                                     
                     if ability == 'death ward':
                         if not player.getLevel() >= 9:
@@ -2613,7 +2890,7 @@ def cast(command, index):
                     if ability == 'true resurrection':
                     
                         def confirmRes(menu, index, choice):
-                            target = players.from_userid(userid_from_index(index))
+                            target = players[index]
                             cleric = target.savior
                             if choice.value == 1:
                                 if not cleric.dead and target.dead and target.get_team() == cleric.get_team():
@@ -2623,14 +2900,18 @@ def cast(command, index):
                                         messagePlayer('You have been brought back to life!', target.index)
                                         messagePlayer('You have brought %s back to life!'%target.name, cleric.index)                                        
                                         cleric.mana -= 100
+
+                                        challenge_manager.update_challenge(
+                                            cleric,
+                                            ChallengeTypes.REVIVE
+                                        )
                             else:
                                 messagePlayer('%s does not want to return from the land of the dead'%target.name, cleric.index)
                     
                         def resSelection(menu, index, choice):
-                            player = players.from_userid(userid_from_index(index))
+                            player = players[index]
                             if player.getClass() == 'Cleric' and player.getLevel() >= 20 and player.mana >= 100:
-                                target = choice.value
-                                target = players.from_userid(userid_from_index(choice.value))
+                                target = players[choice.value]
                                 if target in list(PlayerIter()):
 
                                     if target.get_team() == player.get_team() and target.dead:
@@ -2640,6 +2921,12 @@ def cast(command, index):
                                             messagePlayer('You have been brought back to life!', target.index)
                                             messagePlayer('You have brought %s back to life!'%target.name, player.index)                                        
                                             player.mana -= 100
+
+                                            challenge_manager.update_challenge(
+                                                player,
+                                                ChallengeTypes.REVIVE
+                                            )
+
                                         else:                                    
                                             target.savior = player
                                             resAsk = PagedMenu(title='[D&D] Confirm resurrection')
@@ -2698,21 +2985,25 @@ def cast(command, index):
                             return
                             
                         healing = dice(2,6)
-                        targets = []
-                        for target in PlayerIter():
-                            if target.get_team() == player.get_team() and not target.dead:
-                                targets.append(target)
+                        targets = player.get_teammates()
                         
                         if len(targets):
                             targets.sort(key=lambda target: target.health)
-                            target = players.from_userid(targets[0].userid)
+                            target = players[targets[0].index]
                             healing = target.heal(healing)
                             if healing:
                                 player.mana -= 10
                                 player.spellCooldown = time.time()
-                                messagePlayer("A Paladin healed you!", target.index)
-                                if not target.index == player.index:
-                                    messagePlayer("You healed %s for %s!"%(target.name, healing), player.index)
+                                messagePlayer('A Paladin healed you!', target.index)
+                                if not target.index == index:
+                                    messagePlayer(f'You healed {target.name} for {healing}!', index)
+
+                                    challenge_manager.update_challenge(
+                                        player=player,
+                                        challenge_type=ChallengeTypes.HEAL,
+                                        amount=healing
+                                    )
+
                             else:
                                 messagePlayer('No one needed healing', player.index)
                                 player.spellCooldown = time.time() - 1
@@ -3116,7 +3407,14 @@ def cast(command, index):
                     player.mana -= 120
                     player.spellCooldown = time.time()
                     player.set_jetpack(True)
-                                
+
+                mana_spent = mana_before - player.mana
+                if mana_spent > 0:
+                    challenge_manager.update_challenge(
+                        player=player,
+                        challenge_type=ChallengeTypes.MANA,
+                        amount=mana_spent
+                    )
                     
             else:
                 messagePlayer('Your spells and abilities are on cooldown!', index)
@@ -3154,7 +3452,6 @@ def cast(command, index):
                         player.smite = not player.smite
                         messagePlayer('Your Smite is now ' + ('on' if player.smite else 'off'), player.index)
                         
-    
     return CommandReturn.BLOCK
 
 
@@ -3327,3 +3624,568 @@ def newWeapon():
 
     entity.spawn()
     return entity
+
+
+# =============================================================================
+# >> CHALLENGES
+# =============================================================================
+class ChallengeTypes(IntEnum):
+    """Values that define the type of a challenge."""
+    UNDEFINED = 0
+    # Get kills.
+    KILL = 1
+    # Heal teammates.
+    HEAL = 2
+    # Deal damage from stealth.
+    SNEAK = 3
+    # Stay alive for a few rounds.
+    SURVIVE = 4
+    # Revive teammates.
+    REVIVE = 5
+    # Plant the bomb.
+    BOMB_PLANT = 6
+    # Defuse the bomb.
+    BOMB_DEFUSE = 7
+    # Spend mana.
+    MANA = 8
+
+
+class ChallengeInfo:
+    """Class used to hold information about an active challenge."""
+
+    base_cash = 0
+    base_xp = 0
+    adjusted_cash = 0
+    adjusted_xp = 0
+    challenge_type = ChallengeTypes.UNDEFINED
+    conditions = None
+    completed = False
+    difficulty_multiplier = 1
+    extra_difficulty = False
+    progress = 0
+    end_goal = 0
+    # Determines by how much the rewards are multiplied per condition.
+    condition_multiplier = 0.25
+    # Multiplier used for increasing the rewards depending on how difficult the
+    # end goal is.
+    max_goal_multiplier = 3
+    # Used to round the cash and experience reward.
+    reward_base = 100
+
+    def __init__(self, challenge_type, conditions, end_goal, steamid):
+        """Initializes the object."""
+        self.challenge_type = challenge_type
+        self.conditions = conditions
+        self.end_goal = end_goal
+        self.steamid = steamid
+        self.menu_data = {}
+
+    def init_menu_data(self):
+        """Creates the needed TextEx objects used in the challenges menu."""
+        cash = '' if self.adjusted_cash < 1 else CHALLENGE_STRINGS[
+            'reward cash'].tokenized(number=self.adjusted_cash)
+
+        self.menu_data = {
+            'progress': TextEx(
+                CHALLENGE_STRINGS['progress'].tokenized(
+                    current=0, total=self.end_goal),
+                CHALLENGE_STRINGS['completed']
+            ),
+            'reward': TextEx(CHALLENGE_STRINGS['reward'].tokenized(
+                number=self.adjusted_xp, cash=cash
+            ))
+        }
+
+    def adjust_rewards(self):
+        """Adjusts the rewards of the challenge based on its difficulty."""
+        try:
+            # Are there any active conditions for this challenge?
+            conditions_number = len(self.conditions)
+        except TypeError:
+            # None found.
+            conditions_number = 0
+
+        multiplier = 2.5 if self.extra_difficulty else 1
+        # Increase the multiplier based on how many conditions there are.
+        multiplier += ChallengeInfo.condition_multiplier * conditions_number
+        end_goal_range = ChallengeManager.data[self.challenge_type][
+            'end_goal_range']
+
+        try:
+            goal_difficulty = (end_goal_range.index(
+                self.end_goal) + 1) / len(end_goal_range)
+        except ValueError:
+            goal_difficulty = 0.33
+
+        multiplier += ChallengeInfo.max_goal_multiplier * goal_difficulty
+        base = ChallengeInfo.reward_base
+
+        self.adjusted_cash = base * round(self.base_cash * multiplier / base)
+        self.adjusted_xp = base * round(self.base_xp * multiplier / base)
+        self.difficulty_multiplier = multiplier
+    
+    def update_progress(self, amount):
+        """Updates the progress of the challenge by the specified amount."""
+        self.progress += amount
+
+        # Have we reached the end goal?
+        if self.progress >= self.end_goal:
+            # Mark the challenge as completed.
+            self.completed = True
+
+            player = players[index_from_steamid(self.steamid)]
+            # Give the player some cash and experience.
+            player.cash += self.adjusted_cash
+            player.giveXP(xp=self.adjusted_xp, reason='completing a challenge')
+            CHALLENGE_SOUND.play(player.index)
+
+            # Change the 'In progress: X / Y' text to 'Challenge Completed!'.
+            self.menu_data['progress'].next_text()
+            # Hide the reward text.
+            self.menu_data['reward'].hidden = True
+
+            try:
+                # Try to get the SimpleOption tied to this challenge.
+                option = self.menu_data['option']
+            except KeyError:
+                return
+            
+            # Players can't reroll completed challenges, disable the option.
+            option.selectable = False
+
+        else:
+            self.menu_data['progress'].text.tokens['current'] += amount
+
+    def reset_progress(self):
+        """Resets the progress of the challenge."""
+        self.progress = 0
+        self.menu_data['progress'].text.tokens['current'] = 0
+
+
+class ChallengeManager:
+    """Class used to give players missions/challenges.
+    
+    Attributes:
+        challenges (dict): Dictionary that holds currently active challenges.
+        _defusal_map (bool): Does the current map have bombsites?
+        menus (dict of SimpleMenu): Dictionary that holds SimpleMenu instances
+            used for the main challenge menu.
+        reset_on_death (dict): Dictionary that holds ChallengeInfo instances
+            which should be reset if the player dies.
+    """
+
+    data = {
+        ChallengeTypes.KILL: {
+            'chance': 0.66,
+            'cash': 3000,
+            'xp': 5000,
+            'conditions': {
+                'victim_race': [race.name for race in Race.races],
+                'weapon': [weapon for weapon in allWeapons if weapon not in (
+                    'c4', 'decoy', 'flashbang', 'smokegrenade')],
+                'headshot': (True,)
+            },
+            'end_goal_range': (5, 7, 9, 12, 15, 17, 20, 25)
+        },
+        ChallengeTypes.HEAL: {
+            'chance': 0.25,
+            'cash': 2500,
+            'xp': 4000,
+            'end_goal_range': (300, 400, 500, 600, 700)
+        },
+        ChallengeTypes.REVIVE: {
+            'chance': 0.15,
+            'cash': 4000,
+            'xp': 5000,
+            'end_goal_range': range(3, 10)
+        },
+        ChallengeTypes.SNEAK: {
+            'chance': 0.40,
+            'cash': 2500,
+            'xp': 3500,
+            'end_goal_range': (200, 300, 400, 500, 600)
+        },
+        ChallengeTypes.SURVIVE: {
+            'chance': 0.40,
+            'cash': 2000,
+            'xp': 3000,
+            'end_goal_range': range(3, 9)
+        },
+        ChallengeTypes.MANA: {
+            'chance': 0.40,
+            'cash': 2000,
+            'xp': 2500,
+            'end_goal_range': (250, 500, 750, 1000, 1500, 2000)
+        },
+        ChallengeTypes.BOMB_PLANT: {
+            'chance': 0.20,
+            'cash': 2500,
+            'xp': 3000,
+            'end_goal_range': range(2, 4)
+        },
+        ChallengeTypes.BOMB_DEFUSE: {
+            'chance': 0.20,
+            'cash': 2500,
+            'xp': 3000,
+            'end_goal_range': range(2, 4)
+        }
+    }
+
+    # How many challenges should the player get when they join the server?
+    # NOTE: This value cannot be higher than the number of challenge types.
+    limit = 3
+    # How much cash should it cost to reroll a challenge?
+    reroll_price = 6000
+    # Weapons that can't headshot.
+    no_headshot_weapons = (*knife, *grenades, 'taser')
+    # Set containing challenges that only work on maps with bombsites.
+    bomb_challenges = set(
+        (ChallengeTypes.BOMB_PLANT, ChallengeTypes.BOMB_DEFUSE))
+
+    def __init__(self):
+        """Initializes the object."""
+        self.challenges = {}
+        self._defusal_map = None
+        self.menus = {}
+        self.reset_on_death = {}
+
+        number_of_types = len(ChallengeManager.data)
+        if ChallengeManager.limit > number_of_types:
+            ChallengeManager.limit = number_of_types
+
+    @property
+    def defusal_map(self):
+        """Returns whether or not the map has bombsites."""
+        if self._defusal_map is None:
+            self._defusal_map = len(EntityIter('func_bomb_target')) > 0
+
+        return self._defusal_map
+
+    def add_death_reset(self, steamid, challenge_info):
+        """Sets up the given challenge to be reset if the player dies."""
+        if steamid not in self.reset_on_death:
+            self.reset_on_death[steamid] = []
+
+        self.reset_on_death[steamid].append(challenge_info)
+
+    def generate_challenges(self, player):
+        """Randomly chooses challenges for the given player."""
+        # Is this a bot?
+        if player.is_bot():
+            # Bots don't need challenges, don't go further.
+            return
+
+        steamid = player.steamid
+
+        try:
+            used_types = set(self.challenges[steamid].keys())
+        except KeyError:
+            self.challenges[steamid] = {}
+            used_types = set()
+
+        all_types = set(ChallengeManager.data.keys())
+        # Not a map with bombsites?
+        if not self.defusal_map:
+            # Get rid of challenges that require a bomb.
+            all_types = all_types ^ ChallengeManager.bomb_challenges
+
+        # Create a dictionary which contains challenge types that the player
+        # can receive, and their chance (weight) to occur.
+        # (ChallengeType: chance/probability)
+        types = {
+            k: ChallengeManager.data[k]['chance'] for k in list(
+                all_types ^ used_types)}
+
+        active_challenges = len(used_types)
+        while active_challenges < ChallengeManager.limit:
+            # Get a randomly chosen challenge type.
+            challenge_type = random.choices(
+                list(types.keys()), types.values())[0]
+            # Remove it from the next selection so it doesn't repeat.
+            del types[challenge_type]
+
+            challenge_data = ChallengeManager.data[challenge_type]
+            all_conditions = challenge_data.get('conditions', None)
+
+            # Are there any conditions available for this challenge?
+            if all_conditions is not None:
+                # Get (or don't) some random conditions for the challenge.
+                conditions = random.sample(
+                    all_conditions.keys(), random.randint(
+                        0, len(all_conditions)))
+
+                conditions = {name: random.choice(
+                    all_conditions[name]) for name in conditions}
+            else:
+                conditions = None
+
+            info = ChallengeInfo(
+                challenge_type=challenge_type,
+                conditions=conditions,
+                end_goal=random.choice(challenge_data['end_goal_range']),
+                steamid=steamid
+            )
+            
+            # Is this a stay alive challenge?
+            if challenge_type == ChallengeTypes.SURVIVE:
+                self.add_death_reset(steamid, info)
+
+            # Or is it maybe a kill challenge?
+            elif challenge_type == ChallengeTypes.KILL:
+                # Is the challenge tied to a specific weapon?
+                required_weapon = conditions.get('weapon', None)
+
+                if 'victim_race' in conditions:
+                    # Set a lower goal for the challenge.
+                    info.end_goal = random.randint(3, 5)
+
+                if required_weapon in ChallengeManager.no_headshot_weapons:
+                    info.extra_difficulty = True
+
+                    try:
+                        # Get rid of the headshot only condition.
+                        del info.conditions['headshot']
+                    except KeyError:
+                        pass
+                    
+                    # Halve the required end goal.
+                    info.end_goal = round(info.end_goal * 0.5)
+
+            info.base_cash = challenge_data.get('cash', 0)
+            info.base_xp = challenge_data.get('xp', 0)
+            info.adjust_rewards()
+            info.init_menu_data()
+
+            # Save the challenge for this player.
+            self.challenges[steamid][challenge_type] = info
+            active_challenges += 1
+
+    def update_challenge(self, player, challenge_type, **kwargs):
+        """Updates the progress of a challenge.
+        
+        Args:
+            player (Player/RPGPlayer): Instance of the player whose challenge
+                is being updated.
+            challenge_type (ChallengeType): What category is the challenge in?
+            **kwargs (dict): Additional keyword arguments.
+        """
+        try:
+            # Try to get ChallengeInfo for this player and type.
+            info = self.challenges[player.steamid][challenge_type]
+        except KeyError:
+            return
+
+        # Did the player finish this challenge?
+        if info.completed:
+            return
+
+        # Does the challenge have any special conditions?
+        if info.conditions is not None:
+            for name, value in info.conditions.items():
+                # Did the player fail to meet the condition?
+                if value not in (kwargs.get(name, None), None):
+                    # Don't update the progress.
+                    return
+
+        info.update_progress(kwargs.get('amount', 1))
+
+    def on_player_death(self, player):
+        """Resets challenges which require the player not to die."""
+        try:
+            infos = self.reset_on_death[player.steamid]
+        except KeyError:
+            return
+
+        reset_happened = False
+
+        for info in infos:
+            if info.completed:
+                continue
+
+            if info.progress == 0:
+                continue
+
+            info.reset_progress()
+            reset_happened = True
+        
+        if reset_happened:
+            index = player.index
+
+            messagePlayer(
+                message=str(
+                    _translate_text(CHALLENGE_STRINGS['death reset'], index)),
+                index=index
+            )
+
+    def on_map_changed(self):
+        """Removes all challenge related data when the map changes."""
+        self.challenges = {
+            **dict.fromkeys(ChallengeManager.data, {})}
+        self.reset_on_death.clear()
+        self.menus.clear()
+        self.defusal_map = None
+
+    def get_main_menu(self, index):
+        """Returns the menu that shows the player their challenges."""
+        player = players[index]
+        steamid = player.steamid
+
+        try:
+            player_data = self.challenges[steamid]
+        except KeyError:
+            # Player doesn't have any challenges.
+            return
+
+        try:
+            # Does this player already have a menu?
+            menu = self.menus[steamid]
+        except KeyError:
+            # Guess not, create a new one.
+            menu = SimpleMenu(
+                data=[
+                    Text(CHALLENGE_STRINGS['title']),
+                    BLANK_SPACE
+                ],
+                select_callback=self.send_reroll_menu
+            )
+
+            for i, (challenge_type, info) in enumerate(player_data.items(), 1):
+                end_goal = info.end_goal
+
+                if challenge_type == ChallengeTypes.KILL:
+                    # Is this a headshot only challenge or not?
+                    string = 'type 1 headshot' if info.conditions.get(
+                        'headshot', False) else 'type 1'
+
+                    race = info.conditions.get('victim_race', '')
+                    race = f' {race}' if race else race
+
+                    text = CHALLENGE_STRINGS[string].tokenized(
+                        number=end_goal,
+                        race=race,
+                        weapon=info.conditions.get('weapon', 'any weapon')
+                    )
+                else:
+                    text = CHALLENGE_STRINGS[
+                        f'type {challenge_type}'].tokenized(number=end_goal)
+
+                option = SimpleOption(
+                    choice_index=i, 
+                    text=text, 
+                    value=info,
+                    selectable=not info.completed
+                )
+                
+                menu.append(option)
+                # Show the current progress.
+                menu.append(info.menu_data['progress'])
+                # Show the reward.
+                menu.append(info.menu_data['reward'])
+                menu.append(BLANK_SPACE)
+
+                # Store the SimpleOption for later use.
+                info.menu_data['option'] = option
+
+            menu.append(SimpleOption(9, 'Close'))
+            # Store the menu for later use.
+            self.menus[steamid] = menu
+
+        return menu
+
+    def send_reroll_menu(self, menu, index, choice):
+        """Creates and sends the reroll menu to the player."""
+        info = choice.value
+        can_reroll = not info.completed
+
+        if can_reroll:
+            description = Text(CHALLENGE_STRINGS['reroll desc'].tokenized(
+                number=ChallengeManager.reroll_price
+            ))
+        else:
+            description = Text(CHALLENGE_STRINGS['reroll blocked'])
+
+        SimpleMenu(
+            data=[
+                SimpleOption(
+                    choice_index=1,
+                    text=choice.text,
+                    selectable=False
+                ),
+                BLANK_SPACE,
+                description,
+                BLANK_SPACE,
+                SimpleOption(
+                    choice_index=2, 
+                    text=CHALLENGE_STRINGS['reroll'],
+                    value=choice.value,
+                    highlight=can_reroll,
+                    selectable=can_reroll
+                    ),
+                BLANK_SPACE,
+                SimpleOption(9, 'Go back')
+            ],
+            select_callback=self.reroll,
+            close_callback=lambda menu, index: self.get_main_menu(
+                index).send(index)
+        ).send(index)
+
+    def reroll(self, menu, index, choice):
+        """Replaces the challenge the player picked, for a price."""
+        # Get the ChallengeInfo.
+        info = choice.value
+
+        # Did the player finish this challenge?
+        if info.completed:
+            self.get_main_menu(index).send(index)
+            messagePlayer(
+                message='\x07' + str(_translate_text(
+                    CHALLENGE_STRINGS['reroll blocked'], index)),
+                index=index)
+            return
+
+        player = players[index]
+        price = ChallengeManager.reroll_price
+
+        # Not enough money to reroll?
+        if player.cash < price:
+            CANT_BUY_SOUND.play(index)
+            menu.send(index)
+        else:
+            # Take the player's money.
+            player.cash -= price
+
+            steamid = player.steamid
+            # Remove the selected challenge.
+            del self.challenges[steamid][info.challenge_type]
+            # Remove the menu with outdated challenges.
+            del self.menus[steamid]
+
+            # Generate a new challenge.
+            self.generate_challenges(player)
+            REROLL_SOUND.play(index)
+            # Send the updated menu to the player.
+            self.get_main_menu(index).send(index)
+
+
+challenge_manager = ChallengeManager()
+
+
+@SayCommand(['challenges', '!challenges', '/challenges'])
+@ClientCommand(['challenges', '!challenges', '/challenges'])
+def challenge_command(command, index, team_only=False):
+    """Command used to show the player their challenges."""
+    player = players[index]
+
+    # Is the player missing challenges?
+    if player.steamid not in challenge_manager.challenges:
+        challenge_manager.generate_challenges(player)
+
+    menu = challenge_manager.get_main_menu(index)
+
+    if menu is not None:
+        if menu.is_active_menu(index):
+            menu.close(index)
+        else:
+            menu.send(index)
+
+    return CommandReturn.BLOCK
