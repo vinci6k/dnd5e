@@ -687,6 +687,12 @@ class RPGPlayer(Player):
             self.health = min(self.maxhealth, self.health + amount)
             healed = self.health - healed
             playSound('items/medshot4.wav', player=self)
+            
+            # Apply a quick screen effect.
+            self.set_property_float(
+                'm_flHealthShotBoostExpirationTime',
+                global_vars.current_time + 1.0)
+
             return healed
         return 0
         
