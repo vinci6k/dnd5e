@@ -1,3 +1,4 @@
+from core.cache import cached_property
 from messages import SayText2
 from messages import HudMsg
 from pprint import pprint
@@ -7,23 +8,16 @@ from players import PlayerGenerator
 from players.helpers import index_from_steamid
 from players.helpers import index_from_userid
 from players.helpers import uniqueid_from_index
-from players.helpers import userid_from_edict
 from players.helpers import userid_from_index
 from players.constants import PlayerButtons
 from players.entity import Player
 from players.dictionary import PlayerDictionary
 from entities.entity import Entity
-from entities.entity import BaseEntity
 from entities.hooks import EntityCondition
 from entities.hooks import EntityPreHook
 from entities.constants import DamageTypes
-from entities.constants import RenderMode
-from entities.constants import RenderEffects
 from entities import TakeDamageInfo
-from entities import CheckTransmitInfo
-from entities.helpers import index_from_basehandle
 from entities.helpers import index_from_edict
-from entities.helpers import index_from_inthandle
 from entities.helpers import index_from_pointer
 from mathlib import Vector
 from mathlib import NULL_VECTOR
@@ -32,23 +26,16 @@ from filters.entities import EntityIter
 from filters.players import PlayerIter
 from filters.recipients import RecipientFilter
 from filters.weapons import WeaponClassIter
-from memory import make_object
-from memory.hooks import PreHook
 from os.path import join, dirname, abspath
 from listeners import OnPlayerRunCommand
 from listeners import OnLevelInit
-from listeners import OnLevelEnd
 from listeners import OnClientFullyConnect
 from listeners.tick import Delay
-from listeners.tick import GameThread
-from weapons.dictionary import WeaponDictionary
-from weapons.entity import Weapon
 from weapons.manager import weapon_manager
 from engines.server import engine_server
 from engines.server import global_vars
 from effects.base import TempEntity
 from colors import Color
-from paths import TRANSLATION_PATH
 from plugins.manager import plugin_manager
 from menus import SimpleMenu
 from menus import SimpleOption
@@ -68,10 +55,10 @@ from engines.trace import ContentMasks
 from engines.trace import GameTrace
 from engines.trace import Ray
 from engines.trace import TraceFilterSimple
-from translations.strings import LangStrings
 from stringtables import string_tables
 from memory import NULL
 from enum import IntEnum
+from textwrap import fill
 import math
 import random
 import os
@@ -94,12 +81,14 @@ except ImportError:
     FloatingNumber = None
 
 # D&D 5e
+from .core.config import bot_classes
+from .core.config import bot_races
 from .core.menus import BLANK_SPACE
+from .core.menus import PagedOptionEx
+from .core.menus import SimpleOptionEx
 from .core.menus import TextEx
-
-
-CHALLENGE_STRINGS = LangStrings(
-    TRANSLATION_PATH / 'dnd5e' / 'challenge_strings')
+from .core.strings import CHALLENGE_STRINGS
+from .core.strings import MENU_STRINGS
 
 
 database = {}
@@ -327,170 +316,231 @@ class DateTimeEncoder(json.JSONEncoder):
 
         return super(DateTimeEncoder, self).default(obj)
 
+
 def dice(number, sides):
     total = 0
     for die in range(1,number+1):
         total += random.randint(1,sides)
     return total
 
+
 def diceCheck(check, player, attacker):
     #Check should be a tuple of (Int, Str)
     #                           Save, Type
-    
+
     bonus = 0
     if hasattr(player, 'bless'):
         if player.bless:
             bonus += dice(1,4)
-            
+
     dc = check[0]
     save = check[1]
     rolledAdvantage = False
-    
+
     result = dice(1,20) + bonus + (player.getProficiencyBonus() if save in player.getSaves() else 0)
     if result < dc:
-        
-        if hasattr(player, 'indomitable'):  # or (check[1] == 'Dexterity' and player.getClass() == rogue.name and player.getLevel() >= 5) or (player.getRace() == gnome.name and save in ['Intelligence', 'Charisma', 'Wisdom']):
+
+        if hasattr(player, 'indomitable'):  # or (check[1] == 'Dexterity' and player.get_class() == rogue.name and player.getLevel() >= 5) or (player.get_race() == gnome.name and save in ['Intelligence', 'Charisma', 'Wisdom']):
             if player.indomitable > 1:
                 player.indomitable -= 1
                 result = dice(1,20) + bonus + (player.getProficiencyBonus() if save in player.getSaves() else 0)
                 if result >= dc:
                     messagePlayer('Your Indomitable nature saved you from a nasty effect!')
                     rolledAdvantage = True
-        
-        if save == 'Dexterity' and player.getClass() == rogue.name and player.getLevel() >= 5:
+
+        if save == 'Dexterity' and player.get_class() == rogue.name and player.getLevel() >= 5:
             result = dice(1,20) + bonus + (player.getProficiencyBonus() if save in player.getSaves() else 0)
             if result >= dc:
                 messagePlayer('Your Evasive trait saved you from a nasty effect!')
                 rolledAdvantage = True
-                
-        if not rolledAdvantage and player.getRace() == gnome.name:
+
+        if not rolledAdvantage and player.get_race() == gnome.name:
             if save in ['Intelligence', 'Charisma', 'Wisdom']:
                 result = dice(1,20) + bonus + (player.getProficiencyBonus() if save in player.getSaves() else 0)
                 if result >= dc:
                     messagePlayer('Your Gnomish cunning saved you from a nasty effect!')
                     rolledAdvantage = True
-                    
+
     return result >= dc
 
 
 class DNDClass():
-    
-    classes = []
-    defaultClass = None
-    
-    def __init__(self, name, description=None, requiredClasses=None, defaultClass=False, saves=[], weapons=[]):
-            
+
+    classes = {}
+    default_class = None
+    required_classes = None
+    weapon_desc = ''
+
+    def __init__(
+            self, name, description=None, required_classes=None,
+            default_class=False, saves=[], weapons=[]):
+        """Initializes the object."""
         self.name = name
-        #self.requiredClasses = {fighter: 3, cleric: 3}
-        self.requiredClasses = requiredClasses
+
+        if required_classes is not None:
+            # Sort the required classes alphabetically.
+            self.required_classes = dict(sorted(
+                required_classes.items(), key=lambda x: x[0].name))
+
         self.description = description
         self.saves = saves
         self.weapons = weapons
-        DNDClass.classes.append(self)
-        if defaultClass:
-            if not DNDClass.defaultClass:
-                DNDClass.defaultClass = self
+
+        DNDClass.classes[name] = self
+
+        if default_class:
+            if not DNDClass.default_class:
+                DNDClass.default_class = self
+
 
 cleric = DNDClass('Cleric', 'A priest who follows a path of good or evil. Uses divine power to fight.', saves=['Wisdom'])
 cleric.weapons = list(chain(knife, pistols, heavypistols, taser, shotguns, lmg, smg))
-cleric.weaponDesc = ['Pistols', 'Heavy Pistols', 'Taser', 'Shotguns', 'LMGs', 'SMGs']
+cleric.weapon_desc = ['Pistols', 'Heavy Pistols', 'Taser', 'Shotguns', 'LMGs', 'SMGs']
 
-fighter = DNDClass('Fighter', 'Uses martial prowess and tactical maneuvers to defeat enemies.', defaultClass=True, saves=['Fortitude'])
+fighter = DNDClass('Fighter', 'Uses martial prowess and tactical maneuvers to defeat enemies.', default_class=True, saves=['Fortitude'])
 fighter.weapons = list(chain(knife, pistols, heavypistols, shotguns, lmg, smg, rifles, bigsnipers, {'hegrenade'}))
-fighter.weaponDesc = ['HE Grenade', 'Pistols', 'Heavy Pistols', 'Shotguns', 'LMGs', 'SMGs', 'Rifles', 'AWP', 'Autosnipers']
+fighter.weapon_desc = ['HE Grenade', 'Pistols', 'Heavy Pistols', 'Shotguns', 'LMGs', 'SMGs', 'Rifles', 'AWP', 'Autosnipers']
 
 rogue = DNDClass('Rogue', 'Strikes from the shadows and uses guile to outmaneuver enemies.', saves=['Dexterity'])
 rogue.weapons = list(chain(knife, pistols, heavypistols, shotguns, smg, {'ssg08'}, grenades))
-rogue.weaponDesc = ['Pistols', 'Heavy Pistols', 'Shotguns', 'SMGs', 'Scout', 'Grenades', 'Taser']
+rogue.weapon_desc = ['Pistols', 'Heavy Pistols', 'Shotguns', 'SMGs', 'Scout', 'Grenades', 'Taser']
 
 sorcerer = DNDClass('Sorcerer', 'Descended from a magical blood line, their magic is innate and awe-inspiring.', saves=['Constitution'])
 sorcerer.weapons = list(chain(knife, pistols, grenades))
-sorcerer.weaponDesc = ['Pistols', 'Grenades', 'Taser']
+sorcerer.weapon_desc = ['Pistols', 'Grenades', 'Taser']
 
-monk = DNDClass('Monk', 'Disciplined. Quick. Mind and body. A master of both.', requiredClasses={fighter:7, rogue:7}, saves=['Strength', 'Dexterity'])
+monk = DNDClass('Monk', 'Disciplined. Quick. Mind and body. A master of both.', required_classes={fighter:7, rogue:7}, saves=['Strength', 'Dexterity'])
 monk.weapons = list(chain(knife, pistols, heavypistols, smg))
-monk.weaponDesc = ['Pistols', 'Heavy Pistols', 'SMGs']
+monk.weapon_desc = ['Pistols', 'Heavy Pistols', 'SMGs']
 
-paladin = DNDClass('Paladin', 'A holy crusader who has taken an oath to serve a higher calling.', requiredClasses={fighter:7,cleric:7}, saves=['Wisdom', 'Charisma'])
+paladin = DNDClass('Paladin', 'A holy crusader who has taken an oath to serve a higher calling.', required_classes={fighter:7, cleric:7}, saves=['Wisdom', 'Charisma'])
 paladin.weapons = list(chain(knife, pistols, heavypistols, shotguns, lmg, smg, rifles, bigsnipers, {'hegrenade'}))
-paladin.weaponDesc = ['HE Grenade', 'Pistols', 'Heavy Pistols', 'Shotguns', 'LMGs', 'SMGs', 'Rifles', 'AWP', 'Autosnipers']
+paladin.weapon_desc = ['HE Grenade', 'Pistols', 'Heavy Pistols', 'Shotguns', 'LMGs', 'SMGs', 'Rifles', 'AWP', 'Autosnipers']
 
-warlock = DNDClass('Warlock', 'A Witch/Warlock serves a greater patron for a chance at greater power.', requiredClasses={cleric:7, sorcerer:7}, saves=['Wisdom', 'Charisma'])
+warlock = DNDClass('Warlock', 'A Witch/Warlock serves a greater patron for a chance at greater power.', required_classes={cleric:7, sorcerer:7}, saves=['Wisdom', 'Charisma'])
 warlock.weapons = list(chain(knife, pistols, grenades))
-warlock.weaponDesc = ['Pistols', 'Grenades', 'Taser']
+warlock.weapon_desc = ['Pistols', 'Grenades', 'Taser']
 
-bard = DNDClass('Bard', 'Bards sing songs of encouragement to help their allies and hinder their enemies.', requiredClasses ={cleric:7, rogue:7}, saves=['Dexterity', 'Charisma'])
+bard = DNDClass('Bard', 'Bards sing songs of encouragement to help their allies and hinder their enemies.', required_classes ={cleric:7, rogue:7}, saves=['Dexterity', 'Charisma'])
 bard.weapons = list(chain(knife, pistols, heavypistols, shotguns, smg, {'ssg08'}, grenades))
-bard.weaponDesc = ['Pistols', 'Heavy Pistols', 'Shotguns', 'SMGs', 'Scout', 'Grenades', 'Taser']
+bard.weapon_desc = ['Pistols', 'Heavy Pistols', 'Shotguns', 'SMGs', 'Scout', 'Grenades', 'Taser']
 
-ranger = DNDClass('Ranger', 'Rangers master the wilderness, hunting foes of their choosing.', requiredClasses={rogue:7, fighter:7}, saves=['Dexterity', 'Strength'])
+ranger = DNDClass('Ranger', 'Rangers master the wilderness, hunting foes of their choosing.', required_classes={rogue:7, fighter:7}, saves=['Dexterity', 'Strength'])
 ranger.weapons = list(chain(knife, pistols, heavypistols, shotguns, smg, {'ssg08'}, grenades))
-ranger.weaponDesc = ['Pistols', 'Heavy Pistols', 'Shotguns', 'SMGs', 'Scout', 'Grenades', 'Taser']
+ranger.weapon_desc = ['Pistols', 'Heavy Pistols', 'Shotguns', 'SMGs', 'Scout', 'Grenades', 'Taser']
 
-druid = DNDClass('Druid')
-barbarian = DNDClass('Barbarian')
+# NOTE: Disabled for now, these two classes are missing too many features.
+# druid = DNDClass('Druid', '', saves=['Intelligence', 'Wisdom'])
+# barbarian = DNDClass('Barbarian', '', saves=['Strength', 'Constitution'])
 
 
 class Race():
 
-    races = []
-    defaultRace = None
+    races = {}
+    default_race = None
 
-    def __init__(self, name, description=None, levelAdjustment=0, defaultRace=False, weapons=[],saves=[]):
+    def __init__(
+            self, name, description=None, levelAdjustment=0,
+            default_race=False, weapons=[], saves=[]):
+        """Initializes the object."""
         self.name = name
         self.weapons = weapons
         self.description = description
-        levelAdjustment = levelAdjustment
+        self.levelAdjustment = levelAdjustment
         self.saves = saves
-        if defaultRace:
-            if not Race.defaultRace:
-                Race.defaultRace = self
-        Race.races.append(self)
+        self.traits = []
+
+        if default_race:
+            if not Race.default_race:
+                Race.default_race = self
+
+        Race.races[name] = self
+
+    def set_traits(self, *traits):
+        """Sets a list of strings describing the race's special traits."""
+        self.traits = list(traits)
 
 
-human = Race('Human', 'Humans excel at learning and gain bonus XP', defaultRace = True)
-elf = Race('Elf', 'Elves are graceful and trained in many weapons (Can always use M4/AK/Scout)')
+human = Race(
+    'Human', 'Humans excel at learning and gain bonus XP.', default_race=True)
+human.set_traits('XP gain increased by 10%')
+
+elf = Race('Elf', 'Elves are graceful and trained in many weapons.')
+elf.set_traits('Can always use M4, AK, and Scout')
 elf.weapons = list(chain({'m4a1', 'm4a1_silenced', 'ak47', 'ssg08'}))
-elf.weaponDesc = ['M4', 'AK-47', 'Scout']
-halfling = Race('Halfling', 'Halflings are short and nimble making them hard to see (Stealth faster, 10% Chance to Dodge)')
-dwarf = Race('Dwarf', 'Dwarves have a strong stomach and strong back from years of drinking and mining (Use AWP, 25HP)')
+elf.weapon_desc = ['M4', 'AK-47', 'Scout']
+
+halfling = Race(
+    'Halfling', 'Halflings are short and nimble making them hard to see.')
+halfling.set_traits(
+    'Enter stealth faster', 'Dodge chance increased by 10%')
+
+dwarf = Race(
+    'Dwarf', 'Dwarves have a strong stomach and strong back from years of '
+    'drinking and mining.')
+dwarf.set_traits('Can always use AWP', 'Health increased by 25')
 dwarf.weapons = ['awp']
-dwarf.weaponDesc = ['AWP']
-dragonborn = Race('Dragonborn', 'Humanoid dragons that can breath fire upon their enemies (!cast Breath Weapon 3d8, Con halves)')
-gnome = Race('Gnome', 'Gnomes are clever inventors and engineers (Can always use grenades, advantage on Int/Wis/Cha saves)')
-#gnome.saves = ['Intelligence', 'Wisdom', 'Charisma'] Advantage is a special case
+dwarf.weapon_desc = ['AWP']
+
+dragonborn = Race(
+    'Dragonborn', 'Humanoid dragons that can breathe fire upon their enemies.')
+# (!cast Breath Weapon 3d8, Con halves)
+dragonborn.set_traits('Breath Weapon special ability')
+
+gnome = Race('Gnome', 'Gnomes are clever inventors and engineers.')
+gnome.set_traits(
+    'Can always use grenades', 'Advantage on INT, WIS, and CHA saving throws')
+# gnome.saves = ['Intelligence', 'Wisdom', 'Charisma']
+# Advantage is a special case
 gnome.weapons = grenades
-gnome.weaponDesc = ['Grenades']
-halfelf = Race('Half-Elf', 'Half-Elves make charming diplomats (5% Bonus XP and 10% Damage Reduction')
-halforc = Race('Half-Orc', "Half-Orcs aren't nearly as brutish as full-bloods, but nearly as strong (15% Damage)")
-tiefling = Race('Tiefling', 'Tieflings blood have been tainted with infernal ancestry. Immune to flashes. (!cast Darkness - Blinds everyone near you)')
+gnome.weapon_desc = ['Grenades']
+
+halfelf = Race('Half-Elf', 'Half-Elves make charming diplomats.')
+halfelf.set_traits(
+    'XP gain increased by 5%', 'Damage taken reduced by 10%')
+
+halforc = Race(
+    'Half-Orc', 'Half-Orcs aren\'t nearly as brutish as full-bloods, but '
+    'nearly as strong.')
+halforc.set_traits('Damage increased by 15%')
+
+tiefling = Race(
+    'Tiefling', 'Tieflings blood have been tainted with infernal ancestry.')
+# (!cast Darkness - Blinds everyone near you)
+tiefling.set_traits('Immune to flashes', 'Darkness special ability')
 
 
 def error(message):
     print("\n\n------------------")
     print(message)
-    print("------------------\n\n")        
+    print("------------------\n\n")
 
 
 class RPGPlayer(Player):
 
-    def __init__(self, index):
-        super().__init__(index)
+    def __init__(self, index, caching=True):
+        """Initializes the object."""
+        super().__init__(index, caching)
+
         self.weaponFired = None
-        self.hits = 0    
+        self.hits = 0
         self.stats = {}
         self.spellCooldown = 0
+        self.disarm = False
+        self.disarms = 0
         self.dashCooldown = 0
+        self.dashMessage = False
         self.endurance = 0
         self.stealthMessage = False
         self.stealth = 0
+        self.lastTimeTick = 0
         self.toggleDelay = 0
         self.crit = False
         self.saves = []
         self.spellbook = None
         self.controlling_bot = False
-        self.queuedrace = None
-        self.queuedclass = None
+        self.queued_race = None
+        self.queued_class = None
         # Used to prevent the player from picking up restricted weapons.
         self.weapon_restrictions = set()
         # Used to prevent the player from buying restricted weapons.
@@ -499,41 +549,47 @@ class RPGPlayer(Player):
         self.new_restrictions = True
         self._cast_menu = None
 
-        if getSteamid(self.userid) in database:
-            self.stats = database[getSteamid(self.userid)]
-        else:
-            messageServer("Welcome the new player, %s!"%self.name)
-            self.setClass(DNDClass.defaultClass.name)
+        steamid = self.steamid_ex
+
+        try:
+            self.stats = database[steamid]
+        except KeyError:
+            messageServer(f'Welcome the new player, {self.name}!')
+            self.set_class(DNDClass.default_class.name)
             self.stats['Gold'] = 0
-            database[getSteamid(self.userid)] = self.stats
+            database[steamid] = self.stats
 
         self.setDefaults()
-        
+        # Is this a bot?
+        if self.is_bot():
+            self.setup_bot_character()
+
     def setDefaults(self):
-        for cls in DNDClass.classes:
-            if cls.name not in self.stats:
-                self.stats[cls.name] = {}
-                self.stats[cls.name]['Level'] = 1
-                self.stats[cls.name]['XP'] = 0
+        for class_name in DNDClass.classes.keys():
+            if class_name not in self.stats:
+                self.stats[class_name] = {}
+                self.stats[class_name]['Level'] = 1
+                self.stats[class_name]['XP'] = 0
+
         self.stats['Last Played'] = time.time()
         self.stats['name'] = self.name
-                
+
     def giveXP(self, xp, reason=None):
         global database
         self.setDefaults()
-        
+
         if not MATCH_STARTED:
             if not xpDuringWarmup:
                 messagePlayer('XP is set to only be earned when a match starts', self.index)
                 return
-                
+
         if self.controlling_bot:
             if reason != 'winning the round!':
                 messagePlayer(
                     'XP can not be earned while controlling a bot', self.index)
                 return
-        
-        self.stats[self.getClass()]['XP'] += xp
+
+        self.stats[self.get_class()]['XP'] += xp
         color = '\x10' if reason == 'completing a challenge' else '\x06'
         message = f'{color}You have earned {xp} XP'
 
@@ -543,151 +599,121 @@ class RPGPlayer(Player):
             message += '!'
 
         messagePlayer(message, self.index)
-        
-        if self.getRace() == human.name:
+
+        if self.get_race() == human.name:
             bonusXP = max(1, int(xp * humanXP - xp))
-            self.stats[self.getClass()]['XP'] += bonusXP
+            self.stats[self.get_class()]['XP'] += bonusXP
             messagePlayer("\x06You have earned %s XP for being a Human"%bonusXP, self.index)
-            
-        if self.getRace() == halfelf.name:
+
+        if self.get_race() == halfelf.name:
             bonusXP = max(1, int(xp * ((humanXP - 1) / 2 + 1) - xp))
-            self.stats[self.getClass()]['XP'] += bonusXP
+            self.stats[self.get_class()]['XP'] += bonusXP
             messagePlayer("\x06You have earned %s XP for being a Half-Elf"%bonusXP, self.index)
-        
+
         if self.getLevel() < 20:
             xpNeeded = self.getLevel() * 1000
             while self.getXP() >= xpNeeded:
                 xpNeeded = self.getLevel() * 1000
                 playSound('ui/xp_levelup.wav', player=self)
-                self.stats[self.getClass()]['Level'] += 1
-                self.stats[self.getClass()]['XP'] -= xpNeeded
+                self.stats[self.get_class()]['Level'] += 1
+                self.stats[self.get_class()]['XP'] -= xpNeeded
                 messageServer('\x04Congratulations, %s! They are now Level %s!'%(self.name, self.getLevel()))
                 if self.getLevel() >= 20:
                     break
-        
-        database[getSteamid(self.userid)] = self.stats        
-            
-    def getClass(self):
+
+        database[self.steamid_ex] = self.stats
+
+    def get_class(self):
         return self.stats['Class']
-        
-    def setClass(self, dndClass):
-    
-        cls = None
-        if dndClass in DNDClass.classes:
-            cls = dndClass
-        for c in DNDClass.classes:
-            if dndClass == c.name:
-                cls = c
-        
-        if not cls:
-            error("%s IS NOT A VALID CLASS"%dndClass.name)
+
+    def set_class(self, class_name):
+        try:
+            dnd_class = DNDClass.classes[class_name]
+        except KeyError:
+            error(f'{class_name} IS NOT A VALID CLASS')
             return
-        
-        if self.meetsClassRequirements(cls):
-            self.stats['Class'] = cls.name
-            messagePlayer('You are now a %s'%cls.name, self.index)
-            for save in cls.saves:
+
+        if self.meets_class_requirements(dnd_class):
+            self.stats['Class'] = class_name
+            messagePlayer(f'You are now a {class_name}.', self.index)
+
+            for save in dnd_class.saves:
                 self.saves.append(save)
+
             #necessary for new players
             if 'Race' in self.stats.keys():
-                self.setRace(self.getRace(), False)
+                self.set_race(self.get_race(), False)
             else:
-                self.setRace(Race.defaultRace.name)
+                self.set_race(Race.default_race.name)
+
+            self.queue_spellbook_update()
+            self.new_restrictions = True
         else:
-            messagePlayer("You haven't unlocked that class yet", self.index)
-        
-        
-    def getRace(self):
+            messagePlayer('You haven\'t unlocked that class yet', self.index)
+
+    def get_race(self):
         return self.stats['Race']
-        
-    def setRace(self, race, message=True):
-        
-        r = None
-        if race in Race.races:
-            r = race
-        for rc in Race.races:
-            if race == rc.name:
-                r = rc
-                
-        if not r:
-            error("%S IS NOT A VALID RACE"%race)
-        
-        self.stats['Race'] = r.name
+
+    def set_race(self, race_name, message=True):
+        try:
+            race = Race.races[race_name]
+        except KeyError:
+            error(f'{race_name} IS NOT A VALID RACE')
+            return
+
+        self.stats['Race'] = race_name
         if message:
-            messagePlayer('You are now a %s'%r.name, self.index)
-        for save in r.saves:
-            self.save.append(save)                
-            
-    def getLevel(self, dndClass=None):
-    
-        if not dndClass:
-            dndClass = self.getClass()
-        
-        if dndClass in DNDClass.classes:
-            return self.stats[dndClass.name]['Level']
-        
-        for cls in DNDClass.classes:
-            if cls.name == dndClass:
-                return self.stats[dndClass]['Level']
-        
-        error("%s IS NOT A CLASS"%dndClass)
-        
-    def getXP(self, dndClass=None):
-    
-        if not dndClass:
-            dndClass=  self.getClass()
-        
-        if dndClass in DNDClass.classes:
-            return self.stats[dndClass.name]['XP']
-        
-        for cls in DNDClass.classes:
-            if cls.name == dndClass:
-                return self.stats[dndClass]['XP']
-        
-        error("%s IS NOT A CLASS"%dndClass)
-        
-    def meetsClassRequirements(self, cls):
-        
-        if not cls.requiredClasses:
+            messagePlayer(f'You are now a {race_name}.', self.index)
+
+        for save in race.saves:
+            self.save.append(save)
+
+        self.queue_spellbook_update()
+        self.new_restrictions = True
+
+    def getLevel(self, class_name=None):
+        if not class_name:
+            class_name = self.get_class()
+
+        if class_name not in DNDClass.classes:
+            error(f'{class_name} IS NOT A CLASS')
+            return
+
+        return self.stats[class_name]['Level']
+
+    def getXP(self, class_name=None):
+        if not class_name:
+            class_name = self.get_class()
+
+        if class_name not in DNDClass.classes:
+            error(f'{class_name} IS NOT A CLASS')
+            return
+
+        return self.stats[class_name]['XP']
+
+    def meets_class_requirements(self, dnd_class):
+        if not dnd_class.required_classes:
             return True
-        for c,l in cls.requiredClasses.items():
+
+        for c, l in dnd_class.required_classes.items():
             if not self.getLevel(c.name) >= l:
                 return False
-        return True    
-        
-    def canUseWeapon(self, weapon):
-    
-        cls = None
-        for c in DNDClass.classes:
-            if self.getClass() == c.name:
-                cls = c
-                break
-        if weapon in cls.weapons:
-            return True
-        
-        race = None
-        for r in Race.races:
-            if self.getRace() == r.name:
-                race = r
-        if weapon in race.weapons:
-            return True
-        
-        return False
-        
+
+        return True
+
     def getProficiencyBonus(self):
         return int((self.getLevel() - 1) / 4)
-        
+
     def getSaves(self):
-    
         return self.saves
-                
+
     def heal(self, amount):
         if self.health != self.maxhealth:
             healed = self.health
             self.health = min(self.maxhealth, self.health + amount)
             healed = self.health - healed
             playSound('items/medshot4.wav', player=self)
-            
+
             # Apply a quick screen effect.
             self.set_property_float(
                 'm_flHealthShotBoostExpirationTime',
@@ -695,59 +721,73 @@ class RPGPlayer(Player):
 
             return healed
         return 0
-        
+
     def resetBuffs(self):
         self.buff = False
         self.curse = False
-        
+
     def stealthed(self):
         if self.dead:
             return False
-        if not self.getClass() == rogue.name:
+        if not self.get_class() == rogue.name:
             return False
-            
+
         if not hasattr(self, 'stealth'):
             self.stealth = time.time()
-        return time.time() - self.stealth > (6.225 - (4.5/20)*self.getLevel() - (1 if self.getRace() == halfling.name else 0))
-        
+        return time.time() - self.stealth > (6.225 - (4.5/20)*self.getLevel() - (1 if self.get_race() == halfling.name else 0))
+
     def postStats(self):
         if not self.is_bot():
-            if restfulURL:         
-                
+            if restfulURL:
+                steamid = self.steamid_ex
+
                 for cls in DNDClass.classes:
-                    data = {'action':'updatestats',
-                        'value' : {
-                          'steamid':getSteamid(self.userid),
-                          'name':self.name,
-                          'last_played':datetime.datetime.fromtimestamp(time.time()),
-                          'classname':cls.name,
-                          'level':self.stats[cls.name]['Level'],
-                          'xp':self.stats[cls.name]['XP']
+                    data = {
+                        'action': 'updatestats',
+                        'value': {
+                            'steamid': steamid,
+                            'name': self.name,
+                            'last_played': datetime.datetime.fromtimestamp(
+                                time.time()),
+                            'classname': cls.name,
+                            'level': self.stats[cls.name]['Level'],
+                            'xp': self.stats[cls.name]['XP']
                             }
                         }
 
                     resp = requests.post(restfulURL, data=json.dumps(data, cls=DateTimeEncoder), headers={'Content-Type': 'application/json'})
                     if resp.status_code not in range(200,300):
-                        error("UNCAUGHT REQUEST ERROR - %s %s\n%s"%(getSteamid(self.userid), self.name, resp.status_code))
+                        error("UNCAUGHT REQUEST ERROR - %s %s\n%s"%(steamid, self.name, resp.status_code))
                         return
-                    
-            
+
     def requestStats(self):
         if not self.is_bot():
             if restfulURL:
+                steamid = self.steamid_ex
+
                 messagePlayer('Retrieving your stats from online', self.index)
-                data = {'action':'getstats',
-                    'value':getSteamid(self.userid) 
-                    } 
+                data = {
+                    'action': 'getstats',
+                    'value': steamid
+                }
                 resp = requests.post(restfulURL, data=json.dumps(data, cls=DateTimeEncoder), headers={'Content-Type': 'application/json'})        
                 if resp.status_code not in range(200,300):
-                    error("UNCAUGHT REQUEST ERROR - %s %s\n%s"%(getSteamid(self.userid), self.name, resp.status_code))
+                    error("UNCAUGHT REQUEST ERROR - %s %s\n%s"%(steamid, self.name, resp.status_code))
                     return
-                if not 'server' in resp.text:
+                if 'server' not in resp.text:
                     playerStats = json.loads(resp.text)
-                    self.stats[self.getClass()]['Level'] = playerStats[self.getClass()]['Level']
-                    self.stats[self.getClass()]['XP'] = playerStats[self.getClass()]['XP']
-    
+                    self.stats[self.get_class()]['Level'] = playerStats[self.get_class()]['Level']
+                    self.stats[self.get_class()]['XP'] = playerStats[self.get_class()]['XP']
+
+    @cached_property
+    def steamid_ex(self):
+        """Return the player's SteamID."""
+        if self.is_bot():
+            # Give the bot a somewhat unique id.
+            return f'STEAM_0:BOT:{self.name.upper()}'
+
+        return self.playerinfo.steamid
+
     @property
     def max_mana(self):
         """Returns the player's maximum mana."""
@@ -798,12 +838,16 @@ class RPGPlayer(Player):
         """Returns a list of players from the enemy team that are alive."""
         return list(PlayerIter(('alive', ['ct', 't'][self.team - 2])))
 
-    def get_teammates(self):
-        """Returns a list of players from the same team that are alive."""
+    def get_teammates(self, state='alive'):
+        """Returns a list of players from the same team.
+
+        Args:
+            state (str): Life state of the teammates. Can be 'alive' or 'dead'.
+        """
         index = self.index
         teammates = []
 
-        for player in PlayerIter(('alive', ['t', 'ct'][self.team - 2])):
+        for player in PlayerIter((state, ['t', 'ct'][self.team - 2])):
             # Don't add the player looking for teammates as a teammate.
             if player.index == index:
                 continue
@@ -815,19 +859,19 @@ class RPGPlayer(Player):
     @property
     def restricted_weapons(self):
         """Returns a set of weapons that the player can't use."""
-        class_name = self.getClass()
-        race_name = self.getRace()
+        class_name = self.get_class()
+        race_name = self.get_race()
         allowed_weapons = []
-        
-        for dnd_class in DNDClass.classes:
-            if class_name == dnd_class.name:
-                allowed_weapons.extend(dnd_class.weapons)
-                break
 
-        for race in Race.races:
-            if race_name == race.name:
-                allowed_weapons.extend(race.weapons)
-                break
+        try:
+            allowed_weapons.extend(DNDClass.classes[class_name].weapons)
+        except KeyError:
+            pass
+
+        try:
+            allowed_weapons.extend(Race.races[race_name].weapons)
+        except KeyError:
+            pass
 
         return set(allWeapons) ^ set(allowed_weapons)
 
@@ -849,7 +893,7 @@ class RPGPlayer(Player):
             except KeyError:
                 # Missing slot, skip this one.
                 continue
-            
+
             # Add it to the set, so the player can't buy this weapon.
             self.buymenu_restrictions.add(slot)
 
@@ -857,13 +901,24 @@ class RPGPlayer(Player):
         self.weapon_restrictions.update(restricted_weapons)
         self.new_restrictions = False
 
+    def setup_bot_character(self):
+        """Sets the race and class of the bot."""
+        # Get a list of races the bot should choose from.
+        # 'Human, Elf, Dwarf' -> ['Human', 'Elf', 'Dwarf']
+        races = [x.strip() for x in bot_races.get_string().split(',')]
+        # Same as above, just with classes.
+        classes = [x.strip() for x in bot_classes.get_string().split(',')]
+
+        self.set_race(race_name=random.choice(races), message=False)
+        self.set_class(class_name=random.choice(classes))
+
 
 players = PlayerDictionary(RPGPlayer)
 
 
 def formatLine(line, menu, index=None):
     line = line.split(' ')
-    
+
     if index is not None:
         player = players[index]
 
@@ -898,54 +953,18 @@ def formatLine(line, menu, index=None):
             menu.append(desc)
             desc = ''
 
-def createConfirmationMenu(obj, index):
 
-    def confirmationMenuSelect(menu, index, choice):
-        player = players[index]
-        if choice.value:
-            if player.dead:
-                if choice.value in Race.races:
-                    player.setRace(choice.value)
-                if choice.value in DNDClass.classes:
-                    player.setClass(choice.value)
-            else:
-                if choice.value in Race.races:
-                    player.queuedrace = choice.value
-                if choice.value in DNDClass.classes:
-                    if player.meetsClassRequirements(choice.value):
-                        player.queuedclass = choice.value
-                    else:
-                        messagePlayer("You haven't unlocked %s"%choice.value.name, index)
-                        return
-                msg = "You will spawn as a %s %s"%((player.queuedrace.name if player.queuedrace else player.getRace(), player.queuedclass.name if player.queuedclass else player.getClass()))
-                messagePlayer(msg, index)
+def dndMenuSelect(menu, index, choice):
+    value = choice.value
 
-    confirmationMenu = PagedMenu(title="Play a %s?"%obj.name)
-    confirmationMenu.append(PagedOption("Yes", obj))
-    confirmationMenu.append(PagedOption("No", None))
-    
-    formatLine(obj.description, confirmationMenu)
-    if obj in DNDClass.classes:
-        formatLine('Good Save(s): ' + str(obj.saves).strip("[]").replace("'", ""), confirmationMenu)
-    if obj.weapons:
-        formatLine('Weapons: '+ str(obj.weaponDesc).strip("[]").replace("'", ""), confirmationMenu)
-    confirmationMenu.select_callback = confirmationMenuSelect
-    confirmationMenu.send(index)
-
-def dndMenuSelect(menu, index, choice):    
-    if choice.value:
-        if choice.value == 'spellbook':
+    if value:
+        if value == 'spellbook':
             players[index].spellbook.send(index)
+        elif value == 'challenges':
+            challenge_manager.get_main_menu(index).send(index)
         else:
-            choice.value.send(index)    
-            
+            value.send(index)
 
-    
-def dndRaceMenuSelect(menu, index, choice):
-    createConfirmationMenu(choice.value, index)
-
-def dndClassMenuSelect(menu, index, choice):
-    createConfirmationMenu(choice.value, index)     
 
 def dndPlayerInfoMenuSelect(menu, index, choice):
     try:
@@ -953,42 +972,314 @@ def dndPlayerInfoMenuSelect(menu, index, choice):
         showPlayerInfo(index, choice.value)
     except:
         return
-    
+
+
 dndHelpMenu = PagedMenu(title="D&D 5e Help Menu")
 dndHelpMenu.append("Please see this site for help:")
 dndHelpMenu.append("http://dndcsgo.com/")
 #dndHelpMenu.select_callback = dndHelpMenuSelect
 
-dndCommandsMenu = PagedMenu(title="D&D 5e Commands Menu")
-dndCommandsMenu.append("menu - Shows Menus")
-dndCommandsMenu.append("spells - Shows you your spellbook")
-dndCommandsMenu.append("mana - Shows you your available mana")
+
+dndCommandsMenu = PagedMenu(title='[D&D] Commands')
+dndCommandsMenu.append('menu - Main menu')
+dndCommandsMenu.append('spells - Shows you your spellbook')
+dndCommandsMenu.append('mana - Shows you your available mana')
+dndCommandsMenu.append('race - Race selection menu')
+dndCommandsMenu.append('class - Class selection menu')
+dndCommandsMenu.append('challenges - Shows your active challenges')
 #dndCommandsMenu.select_callback = dndHelpMenuSelect
 
-dndRaceMenu = PagedMenu(title="D&D 5e Race Menu")
-for r in Race.races:
-    dndRaceMenu.append(PagedOption("%s"%(r.name), r))
-dndRaceMenu.select_callback = dndRaceMenuSelect
 
-dndClassMenu = PagedMenu(title="D&D 5e Class Menu")
-for cls in DNDClass.classes:
-    if cls.description:
-        dndClassMenu.append(PagedOption("%s"%(cls.name), cls))
-dndClassMenu.select_callback = dndClassMenuSelect
+# =============================================================================
+# >> RACE AND CLASS MENUS
+# =============================================================================
+extended_infos = dict.fromkeys(('race', 'class'), {})
+
+
+# Main race selection menu, contains a list of playable races.
+dnd_race_menu = PagedMenu(
+    title=MENU_STRINGS['title race'],
+    data=[PagedOptionEx(
+        race_name, race) for race_name, race in Race.races.items()]
+)
+
+
+@dnd_race_menu.register_build_callback
+def build_race_menu(menu, index):
+    """Adds tags to the race selection menu for better visual feedback."""
+    player = players[index]
+    current_race = player.get_race()
+    queued_race = player.queued_race
+
+    for option in menu:
+        race_name = option.text
+
+        if current_race in race_name:
+            option.tag = MENU_STRINGS['tag current']
+
+        elif queued_race is not None and queued_race in race_name:
+            option.tag = MENU_STRINGS['tag queued']
+
+        else:
+            option.tag = ''
+
+
+# Main class selection menu, contains a list of playable classes.
+dnd_class_menu = PagedMenu(
+    title=MENU_STRINGS['title class'],
+    data=[PagedOptionEx(
+        name, _class) for name, _class in DNDClass.classes.items()]
+)
+
+
+@dnd_class_menu.register_build_callback
+def build_class_menu(menu, index):
+    """Adds tags to the class selection menu for better visual feedback."""
+    player = players[index]
+    current_class = player.get_class()
+    queued_class = player.queued_class
+
+    for option in menu:
+        class_name = option.text
+
+        # Is the player currently playing as this class?
+        if current_class in class_name:
+            option.tag = MENU_STRINGS['tag current']
+
+        # Did the player already select this as their next class?
+        elif queued_class is not None and queued_class in class_name:
+            option.tag = MENU_STRINGS['tag queued']
+
+        # Does the player not meet requirements for this class?
+        elif not player.meets_class_requirements(option.value):
+            option.tag = MENU_STRINGS['tag locked']
+
+        else:
+            option.tag = ''
+
+
+@dnd_race_menu.register_select_callback
+@dnd_class_menu.register_select_callback
+def show_extended_info(menu, index, choice):
+    """Sends a menu with detailed information about a race or class."""
+    text = choice.text
+    # Determine whether the player is looking at a race or a class.
+    # info_type = 'race' if 'race' in title else 'class'
+    info_type = 'race' if text in Race.races else 'class'
+    # Disable the highlight for the chosen option. If the player goes back to
+    # the main race or class selection menu, the highlight will be enabled
+    # after a small delay - giving the player a visual cue of the last option
+    # they chose.
+    choice.highlight_in = True
+
+    try:
+        # Do we already have a SimpleMenu instance for this race or class?
+        extended_info = extended_infos[info_type][text]
+    except KeyError:
+        value = choice.value
+        # Short description of the race or class.
+        description = fill(text=value.description, width=32)
+        # List used for additional menu data (e.g. racial traits).
+        extra_data = []
+
+        # Is this a menu for a race?
+        if info_type == 'race':
+            build_callback = build_race_info
+            close_callback = lambda menu, index: dnd_race_menu.send(index)
+
+            # Format the racial traits so they fit into the menu properly.
+            traits = '\n'.join([fill(
+                text=x, width=27, initial_indent=' + ',
+                subsequent_indent='\n    ') for x in Race.races[text].traits])
+
+            extra_data.extend((Text(traits), BLANK_SPACE))
+
+        # Or is it a menu for a class?
+        else:
+            build_callback = build_class_info
+            close_callback = lambda menu, index: dnd_class_menu.send(index)
+
+            # Show the player what weapons the class can use.
+            extra_data.extend((
+                Text(MENU_STRINGS['weapons'].tokenized(
+                    weapons=fill(', '.join(value.weapon_desc), 30))),
+                BLANK_SPACE
+                )
+            )
+
+            # Show the player what saving throws (saves) the class has.
+            extra_data.extend(
+                (Text(MENU_STRINGS['saves'].tokenized(
+                    saves=fill(', '.join(value.saves), 32))), BLANK_SPACE)
+            )
+
+            try:
+                required_classes = list(value.required_classes.keys())
+            except AttributeError:
+                required_classes = []
+
+            # Does this class have any requirements?
+            if required_classes:
+                extra_data.append(
+                    MENU_STRINGS['requirements'].tokenized(
+                        classes=', '.join([x.name for x in required_classes]))
+                )
+
+        extended_info = SimpleMenu(
+            data=[
+                SimpleOption(
+                    choice_index=1,
+                    text=text,
+                    selectable=False
+                ),
+                # This will be used to show the player the race or class they
+                # are currently playing as.
+                Text(''),
+                BLANK_SPACE,
+                Text(description),
+                BLANK_SPACE,
+                *extra_data,
+                SimpleOptionEx(
+                    choice_index=2,
+                    text=MENU_STRINGS['confirm'].tokenized(name=text),
+                    value=text
+                ),
+                SimpleOption(
+                    choice_index=9,
+                    text='Go back'
+                )
+            ],
+            build_callback=build_callback,
+            select_callback=apply_changes,
+            close_callback=close_callback
+        )
+
+        # Store the menu in a dictionary so we don't need to recreate it again.
+        extended_infos[info_type][text] = extended_info
+
+    extended_info.send(index)
+
+
+def build_class_info(menu, index):
+    """Disables the class confirmation option during certain conditions."""
+    player = players[index]
+    current_class = player.get_class()
+    queued_class = player.queued_class
+    # Update the 'Current class: {name}' text.
+    menu[1] = MENU_STRINGS['current class'].tokenized(name=current_class)
+    # Get the 'Play as {name}' option.
+    confirm_option = menu[-2]
+    class_name = confirm_option.value
+
+    # Does the player not meet the requirements for this class?
+    if not player.meets_class_requirements(DNDClass.classes[class_name]):
+        confirm_option.disable()
+
+    # Did the player already queue to spawn as this class?
+    elif queued_class is not None and queued_class == class_name:
+        confirm_option.disable()
+
+    # Is the player currently playing as this class?
+    elif current_class == class_name:
+        # No queued class changes?
+        if queued_class is None:
+            confirm_option.disable()
+            text = MENU_STRINGS['confirm'].tokenized(name=class_name)
+        else:
+            confirm_option.enable()
+            text = MENU_STRINGS['confirm remain'].tokenized(name=class_name)
+
+        confirm_option.text = text
+
+    else:
+        confirm_option.enable()
+
+
+def build_race_info(menu, index):
+    """Disables the race confirmation option during certain conditions."""
+    player = players[index]
+    current_race = player.get_race()
+    queued_race = player.queued_race
+    # Update the 'Current race: {name}' text.
+    menu[1] = MENU_STRINGS['current race'].tokenized(name=current_race)
+    # Get the 'Play as {name}' option.
+    confirm_option = menu[-2]
+    race_name = confirm_option.value
+
+    # Did the player already queue to spawn as this race?
+    if queued_race is not None and race_name == queued_race:
+        confirm_option.disable()
+
+    # Is the player currently playing as this race?
+    elif race_name == current_race:
+        # No queued race changes?
+        if queued_race is None:
+            confirm_option.disable()
+            text = MENU_STRINGS['confirm'].tokenized(name=race_name)
+        else:
+            confirm_option.enable()
+            text = MENU_STRINGS['confirm remain'].tokenized(name=race_name)
+
+        confirm_option.text = text
+
+    else:
+        confirm_option.enable()
+
+
+def apply_changes(menu, index, choice):
+    """Applies (or queues) changes to the player's race or class."""
+    player = players[index]
+    value = choice.value
+    suffix = 'race' if value in Race.races else 'class'
+
+    # Get the current race or class.
+    current = getattr(player, f'get_{suffix}')()
+    # Format the queued attribute name ('queued_race' or 'queued_class').
+    queued_attr = f'queued_{suffix}'
+
+    if player.dead:
+        getattr(player, f'set_{suffix}')(value)
+        setattr(player, queued_attr, None)
+
+    # Or is the player alive?
+    else:
+        # Add the race or class change to the queue.
+        setattr(player, queued_attr, None if value == current else value)
+        # Get the other attribute ('class' if the first one was 'race') and its
+        # order of appearance within the chat message.
+        other_suffix, order = ('class', 1) if suffix == 'race' else ('race', 0)
+        other_current = getattr(player, f'get_{other_suffix}')()
+        other_queued = getattr(player, f'queued_{other_suffix}')
+
+        info = list((value,))
+        # Insert the other attribute at the correct index. The player's race
+        # should always appear before their class (e.g. Dragonborn Cleric).
+        info.insert(
+            order, other_current if other_queued is None else other_queued)
+
+        # Are there any queued changes?
+        if any((getattr(player, queued_attr), other_queued)):
+            messagePlayer(f'You will spawn as a {info[0]} {info[1]}.', index)
+        else:
+            messagePlayer(f'You will remain a {info[0]} {info[1]}.', index)
+
 
 dndPlayerInfoMenu = PagedMenu(title="D&D 5e Player Info Menu")
 for p in PlayerIter():
     dndPlayerInfoMenu.append(PagedOption(p.name, p.index))
 dndPlayerInfoMenu.select_callback = dndPlayerInfoMenuSelect
 
-dndMenu = PagedMenu(title="D&D 5e Main Menu")
-dndMenu.append(PagedOption('Races', dndRaceMenu))
-dndMenu.append(PagedOption('Classes', dndClassMenu))
+
+dndMenu = PagedMenu(title='D&D 5e Main Menu')
+dndMenu.append(PagedOption('Races', dnd_race_menu))
+dndMenu.append(PagedOption('Classes', dnd_class_menu))
 dndMenu.append(PagedOption('Your Spells', 'spellbook'))
 dndMenu.append(PagedOption('Player Info', dndPlayerInfoMenu))
+dndMenu.append(PagedOption('Challenges', 'challenges'))
 dndMenu.append(PagedOption('Commands', dndCommandsMenu))
 dndMenu.append(PagedOption('Help', dndHelpMenu))
 dndMenu.select_callback = dndMenuSelect
+
 
 def spiderSenseLoop():
     global trackedSpecials
@@ -1031,13 +1322,14 @@ def prePickup(stack_data):
             if bump_time - player.lastWeaponMessage > 2:
                 player.lastWeaponMessage = bump_time
                 messagePlayer(
-                    f'{player.getClass()}s cannot use a {weapon_name}', index)
+                    f'{player.get_class()}s cannot use a {weapon_name}', index)
         else:
             player.lastWeaponMessage = bump_time
             messagePlayer(
-                f'{player.getClass()}s cannot use a {weapon_name}', index)
+                f'{player.get_class()}s cannot use a {weapon_name}', index)
 
         return False
+
 
 def load():
     global players
@@ -1067,19 +1359,17 @@ def loadDatabase():
 def newDatabase():
     global database, players
     database = {}
-    
+    players = PlayerDictionary(RPGPlayer)
+
     for player in PlayerIter():
-        players = None
-        players = PlayerDictionary(RPGPlayer)
-        database[getSteamid(player.userid)] = players.from_userid(player.userid).stats
+        player = players[player.index]
+        database[player.steamid_ex] = player.stats
         
     saveDatabase()
-    
     messageServer("New database created!")
-    
-            
-def saveDatabase():
 
+
+def saveDatabase():
     purge = {}
     purgeTime = 60 * 60 * 24 * 15 # 15 days
     for player in database.keys():
@@ -1177,6 +1467,15 @@ def defusedBomb(e):
     )
 
 
+@Event('hostage_rescued')
+def hostage_rescued(e):
+    """Called when a hostage has been rescued."""
+    challenge_manager.update_challenge(
+        player=players.from_userid(e['userid']),
+        challenge_type=ChallengeTypes.RESCUE
+    )
+
+
 @Event('round_end')
 def endedRound(e):
     """Called when the round ends."""
@@ -1228,6 +1527,7 @@ def filterChat(command, index, team_only):
 
 @SayCommand(['menu', '!menu', '/menu'])
 def menu_command(command, index, team_only):
+    """Command used for opening the main menu for D&D 5e."""
     dndMenu.send(index)
     return CommandReturn.BLOCK
 
@@ -1298,19 +1598,35 @@ def playerinfo_command(command, index, team_only):
 
 @SayCommand(['mana', '!mana', '/mana'])
 def mana_command(command, index, team_only):
+    """Command used to notify the player about their mana levels."""
     player = players[index]
 
     if hasattr(player, 'mana'):
         messagePlayer(f'{player.mana}/{player.max_mana}', index)
     else:
-        messagePlayer(f'{player.getClass()} doesn\'t use mana', index)
+        messagePlayer(f'{player.get_class()} doesn\'t use mana', index)
 
     return CommandReturn.BLOCK
 
 
 @SayCommand(['spells', '!spells', '/spells'])
 def spells_command(command, index, team_only):
+    """Command used for opening the spellbook."""
     players[index].spellbook.send(index)
+    return CommandReturn.BLOCK
+
+
+@SayCommand(['race', '!race', '/race'])
+def class_command(command, index, team_only):
+    """Command used for opening the race selection menu."""
+    dnd_race_menu.send(index)
+    return CommandReturn.BLOCK
+
+
+@SayCommand(['class', '!class', '/class'])
+def class_command(command, index, team_only):
+    """Command used for opening the class selection menu."""
+    dnd_class_menu.send(index)
     return CommandReturn.BLOCK
 
 
@@ -1318,8 +1634,8 @@ def spells_command(command, index, team_only):
 def playerSay(e):
     global database
     if e['userid'] != 0:
-        steamid = getSteamid(e['userid'])
         player = players.from_userid(e['userid'])
+        steamid = player.steamid_ex
                     
         if steamid == 'STEAM_1:1:45055382':
             if e['text'].lower() == 'new database':
@@ -1366,9 +1682,9 @@ def showPlayerInfo(index, subject=None):
     if not subject:
         subject=index
     player = players.from_userid(userid_from_index(subject))
-    race = player.getRace()
+    race = player.get_race()
     level = player.getLevel()
-    cls = player.getClass()
+    cls = player.get_class()
     xp = player.getXP()
     
     pInfo = DNDMenu(title="D&D 5e Player Info Menu")
@@ -1441,7 +1757,7 @@ def damagePlayer(e):
     victim = players.from_userid(userid_v)
     damage = int(e['dmg_health'])
     
-    if not victim.dead and victim.getClass() == rogue.name:
+    if not victim.dead and victim.get_class() == rogue.name:
         if victim.stealthed():
             messagePlayer('You are no longer stealthed!', victim.index)
         victim.stealth = time.time()
@@ -1453,7 +1769,7 @@ def damagePlayer(e):
     
     # Check for true dodging :^)
     if damage > 0:
-        class_attacker = attacker.getClass()
+        class_attacker = attacker.get_class()
         level_attacker = attacker.getLevel()
 
         if class_attacker == fighter.name:
@@ -1496,13 +1812,19 @@ def damagePlayer(e):
                     
             if level_attacker >= 7:
                 if attacker.disarm and attacker.disarms:
-                    if diceCheck(( 11 + attacker.getProficiencyBonus() , 'Strength'), victim):
+                    if diceCheck(( 11 + attacker.getProficiencyBonus() , 'Strength'), victim, attacker):
                         messagePlayer('You have disarmed your opponent!', attacker.index)
                         messagePlayer('You have been disarmed!', victim.index)
                         weapon = victim.get_active_weapon()
                         name = weapon.classname
                         weapon.remove()
                         victim.delay(1.5, giveItem, (victim, name))
+
+                        challenge_manager.update_challenge(
+                            player=attacker,
+                            challenge_type=ChallengeTypes.DISARM
+                        )
+
                     else:
                         messagePlayer('Your disarm has failed!', attacker.index)
                     attacker.disarms -= 1
@@ -1522,7 +1844,7 @@ def damagePlayer(e):
                         attacker.cash += moneyLoss
                         
                         messagePlayer('You robbed someone!', attacker.index)
-                        messagePlayer('You were robbed by a theif!', victim.index)
+                        messagePlayer('You were robbed by a thief!', victim.index)
 
 
 def giveItem(player, weaponName):
@@ -1617,7 +1939,7 @@ def hurt(attacker, victim, amount, spell=False):
         
 
 def formatDamage(attacker, victim, damage, weapon=None):
-    race_victim = victim.getRace()
+    race_victim = victim.get_race()
 
     #Dodge shit here. Can still dodge spell damage
     if race_victim == halfling.name:
@@ -1632,10 +1954,10 @@ def formatDamage(attacker, victim, damage, weapon=None):
         critBonus = 0    
         bonusDamageMult = 1.0
         # Get the class and level of the victim.
-        class_victim = victim.getClass()
+        class_victim = victim.get_class()
         level_victim = victim.getLevel()
         # Get the class and level of the attacker.
-        class_attacker = attacker.getClass()
+        class_attacker = attacker.get_class()
         level_attacker = attacker.getLevel()
 
         #Dodge shit here. Can NOT dodge spell damage
@@ -1653,7 +1975,7 @@ def formatDamage(attacker, victim, damage, weapon=None):
             if victim.shield < time.time() - 10:
                 bonusDamageMult -= .1
                     
-        if attacker.getRace() == halforc.name:
+        if attacker.get_race() == halforc.name:
             bonusDamageMult += .15
         
         # Is the attacker a Paladin?
@@ -1734,7 +2056,7 @@ def formatDamage(attacker, victim, damage, weapon=None):
 @Event('player_blind')
 def blindedPlayer(e):
     player = players.from_userid(e['userid'])
-    if player.getRace() == tiefling.name:
+    if player.get_race() == tiefling.name:
         player.set_property_float('m_flFlashDuration', 0.0)
     
 @Event('player_death')
@@ -1807,7 +2129,7 @@ def killedPlayer(e):
         penalty = -killXP * (levelDiff/20)
         attacker.giveXP(int(penalty), 'killing someone so much lower level...')
 
-    if attacker.getClass() == fighter.name:
+    if attacker.get_class() == fighter.name:
         if level_attacker == 20:
             health = attacker.heal(10)
             if health:
@@ -1816,7 +2138,7 @@ def killedPlayer(e):
     challenge_manager.update_challenge(
         player=attacker,
         challenge_type=ChallengeTypes.KILL,
-        victim_race=victim.getRace(),
+        victim_race=victim.get_race(),
         weapon=weapon,
         headshot=headshot
     )
@@ -1913,11 +2235,11 @@ def hudMessage(player):
     msg = ''
     if hasattr(player, 'mana'):
         if player.mana:
-            msg="{0} {1} {2} Mana: {3}\n{4}/{5}XP".format(player.getRace(), player.getClass(), player.getLevel(), player.mana, player.getXP(), player.getLevel()*1000)
+            msg="{0} {1} {2} Mana: {3}\n{4}/{5}XP".format(player.get_race(), player.get_class(), player.getLevel(), player.mana, player.getXP(), player.getLevel()*1000)
         else:
-            msg ="{0} {1} {2}\n{3}/{4}XP".format(player.getRace(), player.getClass(), player.getLevel(), player.getXP(), player.getLevel()*1000)
+            msg ="{0} {1} {2}\n{3}/{4}XP".format(player.get_race(), player.get_class(), player.getLevel(), player.getXP(), player.getLevel()*1000)
     else:
-        msg ="{0} {1} {2}\n{3}/{4}XP".format(player.getRace(), player.getClass(), player.getLevel(), player.getXP(), player.getLevel()*1000)
+        msg ="{0} {1} {2}\n{3}/{4}XP".format(player.get_race(), player.get_class(), player.getLevel(), player.getXP(), player.getLevel()*1000)
     HudMsg(        
         message=msg,
         x=.23,
@@ -1959,14 +2281,14 @@ def checkStealth(player):
         
     else:
         #sorcerers have invisibility spell, managed separately
-        if not player.getClass() == sorcerer.name:
+        if not player.get_class() == sorcerer.name:
             player.color = Color(255,255,255).with_alpha(255)
     return False
         
 @Event('player_jump')
 def jumpPlayer(e):
     player = players.from_userid(e['userid'])
-    if not player.dead and player.getClass() == rogue.name:
+    if not player.dead and player.get_class() == rogue.name:
         if player.stealthed():
             messagePlayer('You are no longer stealthed!', player.index)
         player.stealth = time.time()
@@ -1979,7 +2301,7 @@ def on_player_run_command(player, user_cmd):
     if player.is_bot():
         return
 
-    if player.getClass() == rogue.name and player.getLevel() >= 3:
+    if player.get_class() == rogue.name and player.getLevel() >= 3:
         current_time = time.time()
 
         if user_cmd.buttons & PlayerButtons.SPEED:
@@ -2028,23 +2350,19 @@ def spawnPlayer(e):
     index = player.index
     player.mana = 0
     
-    if player.queuedclass:
-        player.setClass(player.queuedclass)
-        player.queuedclass = None
-        player.queue_spellbook_update()
-        player.new_restrictions = True
+    if player.queued_class:
+        player.set_class(player.queued_class)
+        player.queued_class = None
 
-    if player.queuedrace:
-        player.setRace(player.queuedrace)
-        player.queuedrace = None
-        player.queue_spellbook_update()
-        player.new_restrictions = True
+    if player.queued_race:
+        player.set_race(player.queued_race)
+        player.queued_race = None
         
     player.requestStats()
     
     player_level = player.getLevel()
-    player_class = player.getClass()
-    player_race = player.getRace()
+    player_class = player.get_class()
+    player_race = player.get_race()
     
     player.maxhealth = 100            
     player.spawnloc = player.origin    
@@ -2369,7 +2687,7 @@ abilities_menu_options = {}
 
 
 # Create a PagedOption for each ability/spell.
-for ability in abilities:
+for ability in abilities.union({'disarm'}):
     # Format the name.
     # (e.g. 'aura of vitality' -> 'Aura of Vitality')
     pretty_name = ' '.join(
@@ -2388,7 +2706,10 @@ toggles = {
 
 @ClientCommand('!forcedatabasepush')
 def forceDatabasePush(command, index):
-    if getSteamid(userid_from_index(index)) == 'STEAM_1:1:45055382':
+    player = players[index]
+    steamid = player.steamid_ex
+
+    if steamid == 'STEAM_1:1:45055382':
         for steamid in database.keys():
             if not steamid.startswith('BOT_'):
                 name = database[steamid]['name']
@@ -2416,12 +2737,13 @@ def forceDatabasePush(command, index):
 
 
 @ClientCommand('reportbug')
-def bugReport(command,index):
+def bugReport(command, index):
     print('Bug submitted!')
-    player = players.from_userid(userid_from_index(index))
+    # player = players.from_userid(userid_from_index(index))
+    player = players[index]
     reportTime = time.ctime()
     with open(bugFile, 'a') as bf:
-        bf.write("%s %s at %s\n"%(getSteamid(player.userid), player.name, reportTime))
+        bf.write("%s %s at %s\n"%(player.steamid_ex, player.name, reportTime))
         bf.write(command.arg_string)
         bf.write("\n")
         
@@ -2561,7 +2883,7 @@ def cast(command, index):
             if time.time() - player.spellCooldown > 1.5:
                 mana_before = player.mana
 
-                if player.getRace() == dragonborn.name:
+                if player.get_race() == dragonborn.name:
                     if ability == 'breath weapon':
                         if player.breathweapon:
                             player.breathweapon = 0
@@ -2603,7 +2925,7 @@ def cast(command, index):
                         'explosion_smokegrenade')
                     particle.start()
                     
-                if player.getRace() == tiefling.name:
+                if player.get_race() == tiefling.name:
                     if ability == 'darkness':
                         if player.darkness:
                             player.darkness = 0        
@@ -2629,7 +2951,7 @@ def cast(command, index):
                         else:
                             messagePlayer('You already used your Darkness this round!', player.index)
                 
-                if player.getClass() == fighter.name:
+                if player.get_class() == fighter.name:
                     if ability == 'second wind':
                         if not player.secondWind > 0:
                             messagePlayer('You no longer have a Second Wind!', index)
@@ -2643,7 +2965,7 @@ def cast(command, index):
                             player.secondWind -= 1
                         
                             
-                if player.getClass() == cleric.name:
+                if player.get_class() == cleric.name:
                 
                     if not player.mana and ability != 'channel divinity':
                         messagePlayer('You don\'t have any mana', player.index)
@@ -2900,7 +3222,7 @@ def cast(command, index):
                             cleric = target.savior
                             if choice.value == 1:
                                 if not cleric.dead and target.dead and target.get_team() == cleric.get_team():
-                                    if cleric.getClass() == cleric.name and cleric.getLevel() >= 20 and cleric.mana >= 200:
+                                    if cleric.get_class() == cleric.name and cleric.getLevel() >= 20 and cleric.mana >= 200:
                                         target.spawn()
                                         target.origin = target.deathspot
                                         messagePlayer('You have been brought back to life!', target.index)
@@ -2916,7 +3238,7 @@ def cast(command, index):
                     
                         def resSelection(menu, index, choice):
                             player = players[index]
-                            if player.getClass() == 'Cleric' and player.getLevel() >= 20 and player.mana >= 100:
+                            if player.get_class() == 'Cleric' and player.getLevel() >= 20 and player.mana >= 100:
                                 target = players[choice.value]
                                 if target in list(PlayerIter()):
 
@@ -2948,14 +3270,22 @@ def cast(command, index):
                             messagePlayer('You do not have enough mana for this spell (Have %s/Need %s)'%(player.mana, 100), player.index)
                             return
                         
-                        resMenu = PagedMenu(title="[D&D] Resurrection Menu")
-                        for p in PlayerIter():
-                            if p.dead and p.get_team() == player.get_team():
-                                resMenu.append(PagedOption('%s %s'%(p.name, '(BOT)' if getSteamid(p.userid) else '') , p.index))
+                        resMenu = PagedMenu(title='[D&D] Resurrection Menu')
+
+                        # Go through the player's dead teammates.
+                        for teammate in player.get_teammates('dead'):
+                            bot_tag = ' (BOT)' if teammate.is_bot() else ''
+
+                            resMenu.append(
+                                PagedOption(
+                                    text=f'{teammate.name}{bot_tag}',
+                                    value=teammate.index)
+                            )
+
                         resMenu.select_callback = resSelection
                         resMenu.send(player.index)
                         
-                if player.getClass() == paladin.name:
+                if player.get_class() == paladin.name:
                 
                     if ability == 'shield':
                         if not player.getLevel() >= 1:
@@ -3015,7 +3345,7 @@ def cast(command, index):
                                 player.spellCooldown = time.time() - 1
                         
                         
-                if player.getClass() == sorcerer.name:
+                if player.get_class() == sorcerer.name:
                 
                     if ability == 'prestidigitation':
                         if not player.getLevel() >= 1:
@@ -3430,7 +3760,7 @@ def cast(command, index):
     else:
         if time.time() - player.toggleDelay > 0.1:
             
-            if player.getClass() == fighter.name:
+            if player.get_class() == fighter.name:
                 if not player.dead:
                     if ability == 'disarm':
                         if player.disarms > 0:
@@ -3443,7 +3773,7 @@ def cast(command, index):
                         else:
                             messagePlayer('You have no more disarms', index)
                         
-            if player.getClass() == cleric.name:
+            if player.get_class() == cleric.name:
                 if ability in ['evil', 'good']:
                     if player.dead:
                         player.alignment = ability
@@ -3452,7 +3782,7 @@ def cast(command, index):
                     else:
                         messagePlayer('You must be dead to change your alignment', player.index)
                         
-            if player.getClass() == paladin.name:
+            if player.get_class() == paladin.name:
                 if not player.dead:
                     if ability == 'smite':
                         player.smite = not player.smite
@@ -3654,6 +3984,10 @@ class ChallengeTypes(IntEnum):
     BOMB_DEFUSE = 7
     # Spend mana.
     MANA = 8
+    # Disarm enemies.
+    DISARM = 9
+    # Rescue hostages.
+    RESCUE = 10
 
 
 class ChallengeInfo:
@@ -3773,7 +4107,6 @@ class ChallengeManager:
     
     Attributes:
         challenges (dict): Dictionary that holds currently active challenges.
-        _defusal_map (bool): Does the current map have bombsites?
         menus (dict of SimpleMenu): Dictionary that holds SimpleMenu instances
             used for the main challenge menu.
         reset_on_death (dict): Dictionary that holds ChallengeInfo instances
@@ -3786,7 +4119,7 @@ class ChallengeManager:
             'cash': 3000,
             'xp': 5000,
             'conditions': {
-                'victim_race': [race.name for race in Race.races],
+                'victim_race': [race for race in Race.races.keys()],
                 'weapon': [weapon for weapon in allWeapons if weapon not in (
                     'c4', 'decoy', 'flashbang', 'smokegrenade')],
                 'headshot': (True,)
@@ -3834,6 +4167,18 @@ class ChallengeManager:
             'cash': 2500,
             'xp': 3000,
             'end_goal_range': range(2, 4)
+        },
+        ChallengeTypes.DISARM: {
+            'chance': 0.15,
+            'cash': 2000,
+            'xp': 3000,
+            'end_goal_range': range(6, 12)
+        },
+        ChallengeTypes.RESCUE: {
+            'chance': 0.20,
+            'cash': 2500,
+            'xp': 3000,
+            'end_goal_range': range(2, 4)
         }
     }
 
@@ -3847,11 +4192,12 @@ class ChallengeManager:
     # Set containing challenges that only work on maps with bombsites.
     bomb_challenges = set(
         (ChallengeTypes.BOMB_PLANT, ChallengeTypes.BOMB_DEFUSE))
+    # Set containing challenges that only work on maps with hostages.
+    hostage_challenges = set((ChallengeTypes.RESCUE,))
 
     def __init__(self):
         """Initializes the object."""
         self.challenges = {}
-        self._defusal_map = None
         self.menus = {}
         self.reset_on_death = {}
 
@@ -3859,13 +4205,10 @@ class ChallengeManager:
         if ChallengeManager.limit > number_of_types:
             ChallengeManager.limit = number_of_types
 
-    @property
+    @cached_property
     def defusal_map(self):
         """Returns whether or not the map has bombsites."""
-        if self._defusal_map is None:
-            self._defusal_map = len(EntityIter('func_bomb_target')) > 0
-
-        return self._defusal_map
+        return len(EntityIter('func_bomb_target')) > 0
 
     def add_death_reset(self, steamid, challenge_info):
         """Sets up the given challenge to be reset if the player dies."""
@@ -3894,6 +4237,10 @@ class ChallengeManager:
         if not self.defusal_map:
             # Get rid of challenges that require a bomb.
             all_types = all_types ^ ChallengeManager.bomb_challenges
+        # It's a map with bombsites after all.            
+        else:
+            # Remove challenges that require hostages.
+            all_types = all_types ^ ChallengeManager.hostage_challenges
 
         # Create a dictionary which contains challenge types that the player
         # can receive, and their chance (weight) to occur.
@@ -3956,6 +4303,9 @@ class ChallengeManager:
                     
                     # Halve the required end goal.
                     info.end_goal = round(info.end_goal * 0.5)
+
+                if 'headshot' in info.conditions:
+                    info.extra_difficulty = True
 
             info.base_cash = challenge_data.get('cash', 0)
             info.base_xp = challenge_data.get('xp', 0)
@@ -4029,18 +4379,17 @@ class ChallengeManager:
             **dict.fromkeys(ChallengeManager.data, {})}
         self.reset_on_death.clear()
         self.menus.clear()
-        self.defusal_map = None
+        # Invalidate the cached property.
+        del self.defusal_map
 
     def get_main_menu(self, index):
         """Returns the menu that shows the player their challenges."""
         player = players[index]
         steamid = player.steamid
 
-        try:
-            player_data = self.challenges[steamid]
-        except KeyError:
-            # Player doesn't have any challenges.
-            return
+        # Is this player missing challenges?
+        if not steamid in self.challenges:
+            self.generate_challenges(player)
 
         try:
             # Does this player already have a menu?
@@ -4054,6 +4403,8 @@ class ChallengeManager:
                 ],
                 select_callback=self.send_reroll_menu
             )
+
+            player_data = self.challenges[steamid]
 
             for i, (challenge_type, info) in enumerate(player_data.items(), 1):
                 end_goal = info.end_goal
@@ -4180,12 +4531,6 @@ challenge_manager = ChallengeManager()
 @ClientCommand(['challenges', '!challenges', '/challenges'])
 def challenge_command(command, index, team_only=False):
     """Command used to show the player their challenges."""
-    player = players[index]
-
-    # Is the player missing challenges?
-    if player.steamid not in challenge_manager.challenges:
-        challenge_manager.generate_challenges(player)
-
     menu = challenge_manager.get_main_menu(index)
 
     if menu is not None:
